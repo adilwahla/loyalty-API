@@ -1,0 +1,32 @@
+# Node.js dependencies
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment variables
+.env
+
+# Logs
+logs
+*.log
+debug.log
+error.log
+
+# Coverage directory
+coverage/
+
+# Build / dist
+dist/
+build/
+
+# Database files (if any SQLite for testing)
+*.sqlite
+*.sqlite-journal
+
+# Uploads (keep only sample files if needed)
+uploads/
+
+# OS files
+.DS_Store
+Thumbs.db
