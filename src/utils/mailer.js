@@ -44,7 +44,7 @@ function getTransporter() {
  * @param {string} html
  * @param {string} [text]
  */
-async function sendMail({ to, cc, bcc, subject, html, text }) {
+async function sendMail({ to, cc, bcc, subject, html, text ,attachments}) {
   const transporter = getTransporter();
   const from = process.env.MAIL_FROM || process.env.SMTP_USER;
 
@@ -56,6 +56,7 @@ async function sendMail({ to, cc, bcc, subject, html, text }) {
     subject,
     html,
     text: text || html.replace(/<[^>]*>/g, ' '),
+    attachments
   });
 }
 

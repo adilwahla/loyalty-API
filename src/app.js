@@ -6,6 +6,7 @@ const { swaggerUi, swaggerSpec } = require('./docs/swagger');
 const path = require('path');
 const cors = require('cors');
 const { app, server } = require('../config/server');
+const multer = require('multer');
 // const { testWordpressConnection } = require('../config/wordpress.database');
 
 
@@ -21,12 +22,21 @@ app.use(cors());
 // Serve static files from /uploads
 app.use('/uploads', express.static(path.join(__dirname, '..', 'uploads')));
 // ✅ Add this directly after middleware and before all route mounts
-app.get('/api/v1/ping', (req, res) => {
-  res.status(200).json({ message: 'pong' });
-});
+app.get('/api/v1/ping', require('./routes/api/v1/ping.wordpress.routes'));
 
+app.use('/api/v1/wordpress-db', require('./routes/api/v1/ping.wordpress.routes'));
+
+app.use((err, req, res, next) => {
+  if (err instanceof multer.MulterError) {
+    const msg = err.code === 'LIMIT_FILE_SIZE' ? 'File too large' : err.message;
+    return res.status(413).json({ ok: false, code: err.code, message: msg });
+  }
+  return res.status(500).json({ ok: false, message: err.message || 'Server error' });
+});
 // Swagger docs
 app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+// ✅ Health check ping
+app.use('/api/v1/ping', require('./routes/api/v1/ping.routes'));
 
 // ✅ Admin Routes
 app.use('/api/v1/admin/products', require('./routes/api/v1/admin/product.routes'));
@@ -91,6 +101,11 @@ const adminLinkRoutes  = require('./routes/api/v1/admin/link.admin.routes');
 
 app.use('/api/v1/mobile', mobileLinkRoutes);
 app.use('/api/v1/admin',  adminLinkRoutes);
+
+const analyticsRoutes = require('./routes/api/v1/admin/analytics.routes');
+
+// ✅ Prefix with /api/v1/analytics
+app.use('/api/v1/analytics', analyticsRoutes);
 
 // Sync DB and start server
 sequelize.sync().then(() => {

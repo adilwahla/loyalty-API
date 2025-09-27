@@ -3,6 +3,7 @@
 const ScanService = require('../../services/v1/warrantyScan.service');
 
 const { getWarrantyFromWP , NotFoundError, ExternalServiceError} = require('../../utils/getWarrantyFromWP');
+const { emitAnalytics } = require('../../utils/analytics.emit');
 const { BrandMaster } = require('../../models');
 const { toWarrantyView } = require('../../utils/warrantyTransform'); // ✅ Import
 let batteryBrand = '-';
@@ -28,7 +29,7 @@ let batteryType = '-';
 exports.createScan = async (req, res) => {
   try {
     const userId = req.params.UUID;
-    const { timestamp, geolocation, warrantyNumber } = req.body;
+    const { timestamp, geolocation, warrantyNumber } = req.body; 
 
     console.log('🔵 Incoming Scan Request:', { userId, timestamp, warrantyNumber, geolocation });
 
@@ -95,6 +96,7 @@ exports.createScan = async (req, res) => {
       points,
       timestamp,
     });
+      //  if (io) emitAnalytics(io);
     res.status(201).json({ success: true, message: 'Warranty scan saved.', data: scan });
 
   } catch (err) {
@@ -202,7 +204,7 @@ exports.updateScanStatus = async (req, res) => {
 
     // Emit socket event so admins/users see the approval in real-time
 
-    io.emit('scan_status_updated', { id, status });
+    // io.emit('scan_status_updated', { id, status });
 
     res.status(200).json({ success: true, message: `Scan ${status}`, data: updated });
   } catch (err) {

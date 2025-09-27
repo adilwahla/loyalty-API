@@ -25,7 +25,8 @@ io.on('connection', (socket) => {
   console.log('🔌 ✅ [SOCKET] Client connected:', socket.id);
 
   const { userId, role } = socket.handshake.query || {};
-
+   if (userId) socket.join(`${userId}`);
+  if (role) socket.join(`role:${role}`);
   // join per-user room
   if (userId) {
     socket.join(String(userId));
@@ -37,7 +38,12 @@ io.on('connection', (socket) => {
     socket.join('admins');
     console.log('👮 Joined admins room');
   }
-
+ // also support explicit subscribe from the client
+  socket.on('admin_subscribe', () => {
+    socket.join('admins');
+    console.log('👮 joined admins (via event)');
+    socket.emit('admin_subscribed', true); // optional ack
+  });
   socket.on('disconnect', () => {
     console.log('🔌❌ [SOCKET] Client disconnected:', socket.id);
   });

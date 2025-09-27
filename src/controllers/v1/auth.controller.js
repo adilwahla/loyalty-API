@@ -9,12 +9,15 @@ const UserRole = db.UserRole;
 const sendSms = require('../../utils/sendMobishastraSms');
 const normalizePhone = require('../../utils/normalizePhone');
 const { setOtp, verifyOtp, clearOtp } = require('../../utils/otpCache');
+const { emitBOCreated } = require('../../utils/boEvents');
 const ENABLE_OTP = process.env.ENABLE_OTP_VERIFICATION === 'true';
 // 1. Send OTP
 exports.sendOtp = async (req, res) => {
   const { phoneNumber } = req.body;
   const otp = Math.floor(1000 + Math.random() * 9000).toString();
   const sent = await sendSms(phoneNumber, otp);
+    // ✅ Log OTP + number for debugging
+  console.log(`[OTP] Generated OTP for ${phoneNumber}: ${otp}`);
   if (!sent) return res.status(500).json({ message: 'Failed to send OTP' });
   //    const otp = '1234'; // 🔁 Static OTP for development/testing
 
@@ -80,7 +83,7 @@ exports.registerUser = async (req, res) => {
   const {
     phoneNumber, role, name,
     iqamaNumber, fullName, businessName,
-    vatNumber, businessAddress, bsgCustId, salesRepId
+    vatNumber, businessAddress, bsgCustId, salesRepId, deviceToken,email
   } = req.body;
 
   try {
@@ -98,9 +101,11 @@ exports.registerUser = async (req, res) => {
     if (existing) {
       return res.status(409).json({ message: 'User already registered' });
     }
-
+    // 3) Create user (OTP was verified earlier)
+    const normalizedRole = role.toUpperCase();
+    const status = normalizedRole === 'BUSINESS_OWNER' ? 'PENDING' : '-';
     // 3. Create the user — OTP was already verified in previous step
-    const user = await User.create({ 
+    const user = await User.create({
       phoneNumber,
       role: role.toUpperCase(),
       name,
@@ -112,8 +117,33 @@ exports.registerUser = async (req, res) => {
       bsgCustId,       // ✅ Now added
       salesRepId,      // ✅ Now added
       isOtpVerified: true, // ✅ Trust that verify-otp was already done
+      status,    
+      email,            // 👈 new
+      deviceToken: deviceToken || null, // 👈 new (optional)
     });
 
+      const io = req.app.get('io');
+    if (io) {
+      io.to('admins').emit('bo_created', {
+        id: user.id,
+        fullName: user.fullName ?? null,
+        phoneNumber: user.phoneNumber ?? null,
+        bsgCustId: user.bsgCustId ?? null,
+        businessName: user.businessName ?? null,
+        vatNumber: user.vatNumber ?? null,
+        businessAddress: user.businessAddress ?? null,
+        salesRepId: user.salesRepId ?? null,
+        email: user.email ?? null,
+        rawStatus: user.status,
+        status: user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status),
+        at: new Date().toISOString(),
+      });
+    }
+ // if BO, notify admins dashboard
+  // if (user.role === 'BUSINESS_OWNER') {
+  //   const io = req.app.get('io');
+  //   emitBOCreated(io, user);       // 🔔
+  // }
     return res.status(201).json({ message: 'User registered', user });
 
   } catch (error) {
@@ -144,12 +174,12 @@ exports.loginUser = async (req, res) => {
   // }
   const otpRequiredRoles = ['CUSTOMER', 'TECHNICIAN', 'BUSINESS_OWNER'];
 
-if (otpRequiredRoles.includes(user.role.toUpperCase()) && !user.isOtpVerified) {
-  return res.status(401).json({
-    success: false,
-    message: 'Please verify your phone number first'
-  });
-}
+  if (otpRequiredRoles.includes(user.role.toUpperCase()) && !user.isOtpVerified) {
+    return res.status(401).json({
+      success: false,
+      message: 'Please verify your phone number first'
+    });
+  }
 
 
   if (!user.password || !(await bcrypt.compare(password, user.password))) {
@@ -158,6 +188,16 @@ if (otpRequiredRoles.includes(user.role.toUpperCase()) && !user.isOtpVerified) {
       message: 'Invalid credentials'
     });
   }
+ // 👇 NEW: BO approval gate
+  if (user.role === 'BUSINESS_OWNER' && user.status !== 'APPROVED') {
+    return res.status(403).json({
+      success: false,
+      code: 'BO_APPROVAL_REQUIRED',
+      message: 'Your account is pending admin approval.',
+      status: user.status, // 'PENDING' | 'REJECTED'
+    });
+  }
+
   // ✅ Use JWT_EXPIRES_IN from environment variables
   const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
   const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, {
@@ -232,10 +272,13 @@ exports.forgotPasswordVerifyOtp = async (req, res) => {
   if (!user) {
     return res.status(404).json({ message: 'User not found' });
   }
-    if (user) {
+  if (user) {
     await user.update({ isOtpVerified: true }); // ✅ This ensures Sequelize maps field properly
   }
 
   clearOtp(phoneNumber); // ✅ only clear after successful verification
   return res.json({ message: 'OTP verified', user });
 };
+
+
+

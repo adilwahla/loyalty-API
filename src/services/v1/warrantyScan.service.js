@@ -1,7 +1,8 @@
 // src/services/v1/warrantyScan.service.js
-const { WarrantyScan, User,UserRole , BrandMaster } = require('../../models');
+const { WarrantyScan, User,UserRole , BrandMaster ,TechnicianBusinessOwnerLink} = require('../../models');
 const { toWarrantyView } = require('../../utils/warrantyTransform');
 const { getWarrantyFromWP } = require('../../utils/getWarrantyFromWP');
+const { emitAnalytics } = require('../../utils/analytics.emit');
 exports.createScan = async ({ userId, timestamp, geolocation, points, productName, sku,brand, brandType, warrantyNumber }) => {
   return WarrantyScan.create({
     userId,
@@ -56,6 +57,7 @@ exports.getUserScans = async (userId) => {
 //   return scan;
 // };
 exports.updateScanStatus = async (id, status , io) => {
+    var pointsToAdd ; // default
   const scan = await WarrantyScan.findByPk(id);
   if (!scan) return null;
 
@@ -66,7 +68,7 @@ exports.updateScanStatus = async (id, status , io) => {
   if (status === 'approved' && scan.userId) {
     const user = await User.findByPk(scan.userId);
     if (user) {
-      const pointsToAdd = parseFloat(scan.points) || 0;
+       pointsToAdd = parseFloat(scan.points) || 0;
 
       user.points = (user.points || 0) + pointsToAdd;
       await user.save();
@@ -75,20 +77,67 @@ exports.updateScanStatus = async (id, status , io) => {
 
      // 🔹 Emit real-time points update
       io.to(user.id).emit('points_updated', { points: user.points });
+       // ... update status to APPROVED/REJECTED ...
+      // if (io) emitAnalytics(io);
       console.log(`✅ Added ${pointsToAdd} points to ${user.fullName}  New total: ${user.points}`);
     }
+
+
+
+  // 🔻 NEW: if the scan owner is a TECHNICIAN and has an ACTIVE link,
+      // credit the linked Business Owner with techPoints × shareFactor
+  // 🔻 If scan owner is a TECHNICIAN and has an ACTIVE link, credit linked Business Owner
+      if (user.role === 'TECHNICIAN') {
+        const link = await TechnicianBusinessOwnerLink.findOne({
+          where: { technicianId: user.id, status: 'ACTIVE' },
+        });
+
+        if (link && link.businessOwnerId) {
+          const owner = await User.findByPk(link.businessOwnerId);
+          if (owner) {
+            const shareFactor = Number(link.shareFactor) || 0; // e.g., 0.20 = 20%
+            const boShare = Math.round(pointsToAdd * shareFactor); // policy: round to int
+
+            if (boShare > 0) {
+              owner.points = (Number(owner.points) || 0) + boShare;
+              await owner.save();
+
+              // 🔊 Live update for the linked Business Owner
+              io.to(`${owner.id}`).emit('points_updated', {
+                userId: owner.id,
+                points: owner.points,
+                fromTechnicianId: user.id,
+                share: boShare,
+              });
+
+              console.log(
+                `🏢 BO share: +${boShare} to ${owner.fullName} (factor ${shareFactor} × tech ${pointsToAdd}) → total ${owner.points}`
+              );
+            }
+          }
+        }
+      }
+      // 🔺 END NEW
+
   }
   // ✅ Always notify the user’s devices about this scan’s new status
-  io.to(scan.userId).emit('scan_status_updated', {
-    id: scan.id,
-    status: scan.status,                 // 'approved' | 'rejected' | 'pending'
-    points: scan.points,                 // send the row points so UI can show +50/-50
-    brand: scan.brand,
-    brandType: scan.brandType,
-    productName: scan.productName,
-    timestamp: new Date().toISOString(), // for UI time
-  });
+  // ✅ Targeted event, now includes userId and explicit scanId
 
+
+  
+  if (scan.userId) {
+    io.to(`${scan.userId}`).emit('scan_status_updated', {
+    userId: scan.userId,            // <-- add this so client filter passes
+     scanId: scan.id,                // <-- explicit
+      id: scan.id,                    // keep for backward compatibility
+      status: scan.status,
+      points: scan.points,
+      brand: scan.brand,
+      brandType: scan.brandType,
+      productName: scan.productName,
+      timestamp: new Date().toISOString(),
+    });
+  }
   // (Optional) if you want admin tables to refresh:
   // io.emit('scan_status_changed_admin', { id: scan.id, status: scan.status });
   return scan;

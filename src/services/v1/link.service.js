@@ -130,9 +130,33 @@ exports.linkTechnicianToBoWithToken = async function linkTechnicianToBoWithToken
       throw err;
     }
 
+    // ✅ Enforce "one technician → one ACTIVE BO"
+    const existingActive = await TechnicianBusinessOwnerLink.findOne({
+      where: { technicianId: tech.id, status: 'ACTIVE' },
+      include: [{ association: 'businessOwner', attributes: ['id', 'fullName'] }],
+      transaction: t,
+      lock: t.LOCK.UPDATE,
+    });
+
+    // Already ACTIVE with some BO
+    if (existingActive) {
+      // Same BO? idempotent success
+      if (existingActive.businessOwnerId === bo.id) {
+        await used.destroy({ transaction: t }); // consume nonce on success path
+        return {
+          link: existingActive,
+          bo: { id: bo.id, fullName: bo.fullName, bsgCustId: bo.bsgCustId ?? null },
+        };
+      }
+      // Different BO → reject with friendly message
+      const err = new Error(`you are already linked with ${existingActive.businessOwner?.fullName || 'another Business Owner'}`);
+      err.statusCode = 409;
+      throw err;
+    }
+
     const [link, created] = await TechnicianBusinessOwnerLink.findOrCreate({
       where: { technicianId, businessOwnerId: bo.id },
-      defaults: { shareFactor: 0.20, status: 'ACTIVE' },
+      defaults: { shareFactor: 0.50, status: 'ACTIVE' },
       transaction: t,
       lock: t.LOCK.UPDATE,
     });

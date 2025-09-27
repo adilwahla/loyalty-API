@@ -90,7 +90,18 @@ module.exports = (sequelize, DataTypes) => {
       defaultValue: 0.5, // fallback multiplier
       field: 'share_factor',
     },
-
+    // NEW (non-breaking)
+    status: {
+      type: DataTypes.STRING, // '-', 'PENDING', 'APPROVED', 'REJECTED'
+      allowNull: false,
+      defaultValue: '-',      // non-BO users show '-'
+      field: 'status',
+    },
+    deviceToken: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: 'device_token',
+    },
 
   }, {
     tableName: 'users',

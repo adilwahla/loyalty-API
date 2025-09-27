@@ -57,6 +57,17 @@ if (typeof TechnicianBusinessOwnerLink.associate === 'function') {
   TechnicianBusinessOwnerLink.associate({ User });
 }
 
+// WarrantyRedemption N:1 User
+WarrantyRedemption.belongsTo(User, {
+  as: 'user',
+  foreignKey: 'userId', // model attribute (maps to column user_id)
+});
+User.hasMany(WarrantyRedemption, {
+  as: 'warrantyRedemptions',
+  foreignKey: 'userId',
+});
+
+
 // // ✅ User has one role
 // User.belongsTo(UserRole, {
 //   foreignKey: 'role',   // column in User table

@@ -5,7 +5,7 @@ const { User } = require('../../models'); // ✅ ADD THIS LINE
 
 exports.createUser = async (req, res, next) => {
   try {
-    let { phoneNumber, role, iqamaNumber, fullName, businessName, vatNumber, businessAddress, binShihonWorkerId, salesRepId, bsgCustId, email, branchManagerId, } = req.body;
+    let { phoneNumber, role, iqamaNumber, fullName, businessName, vatNumber, businessAddress, binShihonWorkerId, salesRepId, bsgCustId, email, branchManagerId} = req.body;
 
     // Remove all non-digit characters
     phoneNumber = phoneNumber.replace(/\D/g, '');
@@ -21,6 +21,8 @@ exports.createUser = async (req, res, next) => {
     if (!/^5\d{8}$/.test(phoneNumber)) {
       return res.status(400).json({ message: 'Invalid Saudi phone number format' });
     }
+
+
 
     const existing = await User.findOne({ where: { phoneNumber } });
     if (existing) {
@@ -55,13 +57,19 @@ exports.createUser = async (req, res, next) => {
       bsgCustId,
       email,
       branchManagerId,
-      password: hashedPassword,
+
+
+      // password: hashedPassword,
 
     });
-// Set status only for BUSINESS_OWNER
-if (userData.role === 'BUSINESS_OWNER') {
-  userData.status = 'pending';
-}
+// // Set status only for BUSINESS_OWNER
+// if (userData.role === 'BUSINESS_OWNER') {
+//   userData.status = 'pending';
+// }
+    // 🔹 Emit updated analytics (if io provided)
+    //     const io = req.app.get('io');
+    //  if (io) emitAnalytics(io);
+
     res.status(201).json({ message: 'User created', user: newUser });
   } catch (err) {
     next(err);
@@ -107,3 +115,91 @@ exports.deleteUser = async (req, res) => {
   }
 };
 
+/**
+ * 
+ * Admin: Approve or Reject Business Owner registrations 
+ */
+exports.approveBusinessOwner = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const user = await User.findByPk(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.role !== 'BUSINESS_OWNER') return res.status(400).json({ message: 'Not a Business Owner' });
+
+    await user.update({ status: 'APPROVED' });
+
+    // optional: notify via socket if your app uses it
+    const io = req.app.get('io');
+    if (io) io.to(String(user.id)).emit('user_status_updated', { status: 'APPROVED' });
+
+    res.json({ message: 'Business Owner approved', userId: user.id });
+  } catch (e) { next(e); }
+};
+
+exports.rejectBusinessOwner = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const user = await User.findByPk(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.role !== 'BUSINESS_OWNER') return res.status(400).json({ message: 'Not a Business Owner' });
+
+    await user.update({ status: 'REJECTED' });
+    res.json({ message: 'Business Owner rejected', userId: user.id });
+  } catch (e) { next(e); }
+};
+
+exports.createBusinessOwner = async (req, res, next) => {
+  try {
+    let { phoneNumber, fullName, businessName, vatNumber, businessAddress, bsgCustId, salesRepId, email, status } = req.body;
+
+    // normalize phone like your other controllers
+    phoneNumber = phoneNumber.replace(/\D/g, '');
+    if (phoneNumber.startsWith('966') && phoneNumber.length === 12) phoneNumber = phoneNumber.slice(3);
+    else if (phoneNumber.startsWith('05') && phoneNumber.length === 10) phoneNumber = phoneNumber.slice(1);
+
+    const existing = await User.findOne({ where: { phoneNumber } });
+    if (existing) return res.status(409).json({ message: 'User already registered' });
+
+    const defaultPassword = process.env.DEFAULT_USER_PASSWORD || '1234567';
+    const hashed = await bcrypt.hash(defaultPassword, parseInt(process.env.BCRYPT_SALT_ROUNDS) || 10);
+
+    const user = await User.create({
+      phoneNumber,
+      role: 'BUSINESS_OWNER',
+      fullName,
+      businessName,
+      vatNumber,
+      businessAddress,
+      bsgCustId: bsgCustId || null,
+      salesRepId: salesRepId || null,
+      email: email || null,
+      password: hashed,
+      isOtpVerified: true,
+      status: status || 'APPROVED', // admin-created are approved by default
+    });
+
+    res.status(201).json({ message: 'Business Owner created', user });
+  } catch (e) { next(e); }
+};
+
+exports.updateBusinessOwner = async (req, res, next) => {
+  try {
+    const { userId } = req.params;
+    const { fullName, businessName, vatNumber, businessAddress, bsgCustId, salesRepId, email } = req.body;
+    const user = await User.findByPk(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+    if (user.role !== 'BUSINESS_OWNER') return res.status(400).json({ message: 'Not a Business Owner' });
+
+    await user.update({
+      fullName,
+      businessName,
+      vatNumber,
+      businessAddress,
+      bsgCustId,
+      salesRepId,
+      email,
+    });
+
+    res.json({ message: 'Business Owner updated', user });
+  } catch (e) { next(e); }
+};

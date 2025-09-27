@@ -5,5 +5,7 @@ const dashboardAuthController = require('../../../../controllers/v1/dashboardAut
 router.post('/register', dashboardAuthController.registerUser);
 router.post('/login', dashboardAuthController.loginUser);
 router.put('/update-password/:id', dashboardAuthController.updatePassword);
+router.post('/ensure-super-admin', dashboardAuthController.ensureSuperAdmin);
+
 
 module.exports = router;

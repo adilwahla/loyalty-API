@@ -1,77 +1,112 @@
+'use strict';
+
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { Op } = require('sequelize');
 const { User, UserRole } = require('../../models');
+const normalizePhone = require('../../utils/normalizePhone');
 
-// exports.registerUser = async (req, res) => {
-//   try {
-//     const {
-//       phoneNumber,
-//       password = '1234567',
-//       role,
-//       fullName,
-//       email
-//     } = req.body;
+// ---- envs ----
+const DEFAULT_USER_PASSWORD = process.env.DEFAULT_USER_PASSWORD || '1234567';
+const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
+const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
+const ADMIN_SETUP_TOKEN = process.env.ADMIN_SETUP_TOKEN || null;
 
-//     // ✅ Validate role from user_roles (Dashboard only)
-//     const validRole = await UserRole.findOne({
-//       where: {
-//         roleName: role.toUpperCase(),
-//         platform: 'Dashboard'
-//       }
-//     });
-
-//     if (!validRole) {
-//       return res.status(400).json({ message: 'Invalid or unauthorized role for Dashboard' });
-//     }
-
-//     const existing = await User.findOne({ where: { phoneNumber } });
-//     if (existing) return res.status(409).json({ message: 'User already exists' });
-
-//     const hashedPassword = await bcrypt.hash(password, 10);
-
-//     const user = await User.create({
-//       phoneNumber,
-//       password: hashedPassword,
-//       role: role.toUpperCase(),
-//       fullName,
-//       email,
-//       isOtpVerified: true // ✅ Skip OTP
-//     });
-
-//     res.status(201).json({ message: 'Dashboard user created', user });
-//   } catch (err) {
-//     res.status(500).json({ message: 'Failed to register user', error: err.message });
-//   }
-// };
+// make a few phone variants so we can find legacy rows
+function phoneVariants(rawPhone) {
+  const n = normalizePhone(rawPhone);        // e.g. '539953058' (your function strips 966 and leading 0)
+  const with0 = n.startsWith('0') ? n : '0' + n;             // '0539953058'
+  const with966 = n.startsWith('966') ? n : '966' + n;       // '966539953058'
+  return Array.from(new Set([n, with0, with966]));
+}
 
 
-exports.registerUser = async (req, res) => {
-  const {
-    phoneNumber, password, role, fullName, email,
-    binShihonWorkerId, salesRepId, branchManagerId
-  } = req.body;
 
+async function ensureDashboardRole(roleName) {
+  await UserRole.findOrCreate({
+    where: { roleName: roleName.toUpperCase(), platform: 'Dashboard' },
+    defaults: { roleName: roleName.toUpperCase(), platform: 'Dashboard' },
+  });
+}
+
+exports.ensureSuperAdmin = async (req, res) => {
   try {
-    // ✅ Lookup role from DB for platform "Dashboard"
-    const roleRecord = await UserRole.findOne({
-      where: { roleName: role.toUpperCase(), platform: 'Dashboard' }
+    // Optional protection: header gate
+    if (ADMIN_SETUP_TOKEN) {
+      const key = req.header('x-setup-key');
+      if (key !== ADMIN_SETUP_TOKEN) return res.status(403).json({ message: 'Forbidden' });
+    }
+
+    const existing = await User.findOne({ where: { role: 'SUPER_ADMIN' } });
+    if (existing) {
+      return res.status(409).json({ message: 'SUPER_ADMIN already exists', superAdmin: existing });
+    }
+
+    const { fullName, email, phoneNumber, password } = req.body || {};
+    if (!fullName || !email || !phoneNumber) {
+      return res.status(400).json({ message: 'fullName, email, phoneNumber are required' });
+    }
+
+    await ensureDashboardRole('SUPER_ADMIN');
+
+    const norm = normalizePhone(phoneNumber);     // <- your canonical phone
+    const taken = await User.findOne({ where: { phoneNumber: norm } });
+    if (taken) return res.status(409).json({ message: 'Phone already in use' });
+
+    const hashed = await bcrypt.hash(password || DEFAULT_USER_PASSWORD, BCRYPT_SALT_ROUNDS);
+
+    const user = await User.create({
+      fullName, email,
+      phoneNumber: norm,
+      password: hashed,
+      role: 'SUPER_ADMIN',
+      isOtpVerified: true
     });
 
-    if (!roleRecord) {
+    return res.status(201).json({
+      message: 'SUPER_ADMIN created',
+      user: { id: user.id, fullName: user.fullName, email: user.email, phoneNumber: user.phoneNumber, role: user.role }
+    });
+  } catch (err) {
+    console.error('ensure-super-admin error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+
+async function roleAllowedOnDashboard(roleName) {
+  const rec = await UserRole.findOne({
+    where: { roleName: String(roleName || '').toUpperCase(), platform: 'Dashboard' }
+  });
+  return !!rec;
+}
+
+// ---------------- REGISTER ----------------
+exports.registerUser = async (req, res) => {
+  try {
+    let {
+      phoneNumber, password, role, fullName, email,
+      binShihonWorkerId, salesRepId, branchManagerId
+    } = req.body;
+
+    const roleUp = String(role || '').toUpperCase();
+    const norm = normalizePhone(phoneNumber);
+
+    if (!norm || !fullName || !email || !roleUp) {
+      return res.status(400).json({ message: 'Name, phone, email, and role are required' });
+    }
+
+    const allowed = await roleAllowedOnDashboard(roleUp);
+    if (!allowed) {
       return res.status(400).json({ message: 'Invalid role for Dashboard platform' });
     }
 
-    // ✅ Check for existing user
-    const existing = await User.findOne({ where: { phoneNumber } });
+    // check duplicates across common formats
+    const existing = await User.findOne({ where: { phoneNumber: { [Op.in]: phoneVariants(norm) } } });
     if (existing) return res.status(409).json({ message: 'User already exists' });
 
-    // ✅ Always required
-    if (!phoneNumber || !fullName || !email) {
-      return res.status(400).json({ message: 'Name, phone, and email are required' });
-    }
-
-    // ✅ Role-based custom validation
-    switch (role.toUpperCase()) {
+    // role-specific checks
+    switch (roleUp) {
       case 'SALES_REP':
         if (!binShihonWorkerId || !salesRepId) {
           return res.status(400).json({ message: 'Sales Rep must have binShihonWorkerId and salesRepId' });
@@ -82,15 +117,17 @@ exports.registerUser = async (req, res) => {
           return res.status(400).json({ message: 'Branch Manager must have binShihonWorkerId and branchManagerId' });
         }
         break;
-      // add more case validations as needed
+      default:
+        // ADMIN / SUPER_ADMIN etc. no extras
+        break;
     }
 
-    const hashed = await bcrypt.hash(password || '1234567', 10);
+    const hashed = await bcrypt.hash(password || DEFAULT_USER_PASSWORD, BCRYPT_SALT_ROUNDS);
 
     const user = await User.create({
-      phoneNumber,
+      phoneNumber: norm,      // store in canonical format per your normalizePhone
       password: hashed,
-      role: role.toUpperCase(),
+      role: roleUp,
       fullName,
       email,
       binShihonWorkerId,
@@ -100,38 +137,40 @@ exports.registerUser = async (req, res) => {
     });
 
     return res.status(201).json({ message: 'Dashboard user created', user });
-
   } catch (err) {
     console.error('Dashboard user registration error:', err);
     return res.status(500).json({ message: 'Internal server error' });
   }
 };
 
+// ---------------- LOGIN ----------------
 exports.loginUser = async (req, res) => {
   try {
     const { phoneNumber, password } = req.body;
+    const variants = phoneVariants(phoneNumber);
 
-    const user = await User.findOne({ where: { phoneNumber } });
-    if (!user) return res.status(403).json({ message: 'Invalid credentials' });
+    const user = await User.findOne({ where: { phoneNumber: { [Op.in]: variants } } });
+    if (!user) {
+      return res.status(403).json({ message: 'Invalid credentials' });
+    }
 
-    // ✅ Confirm this user’s role is valid for Dashboard
-    const validRole = await UserRole.findOne({
-      where: {
-        roleName: user.role.toUpperCase(),
-        platform: 'Dashboard' 
-      }
-    });
-
-    if (!validRole) {
+    const allowed = await roleAllowedOnDashboard(user.role);
+    if (!allowed) {
       return res.status(403).json({ message: 'Not allowed to access dashboard' });
     }
 
     const isMatch = await bcrypt.compare(password, user.password || '');
-    if (!isMatch) return res.status(403).json({ message: 'Invalid credentials' });
+    if (!isMatch) {
+      return res.status(403).json({ message: 'Invalid credentials' });
+    }
 
-    const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
+    const token = jwt.sign(
+      { id: user.id, role: user.role },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
 
-    res.status(200).json({
+    return res.status(200).json({
       success: true,
       message: 'Login successful',
       token,
@@ -144,11 +183,12 @@ exports.loginUser = async (req, res) => {
       }
     });
   } catch (err) {
-    res.status(500).json({ message: 'Login failed', error: err.message });
+    console.error('Dashboard login error:', err);
+    return res.status(500).json({ message: 'Login failed', error: err.message });
   }
 };
 
-
+// ---------------- UPDATE PASSWORD ----------------
 exports.updatePassword = async (req, res) => {
   try {
     const { id } = req.params;
@@ -161,11 +201,12 @@ exports.updatePassword = async (req, res) => {
     const user = await User.findByPk(id);
     if (!user) return res.status(404).json({ message: 'User not found' });
 
-    const hashed = await bcrypt.hash(password, 10);
+    const hashed = await bcrypt.hash(password, BCRYPT_SALT_ROUNDS);
     await user.update({ password: hashed });
 
-    res.json({ message: 'Password updated successfully' });
+    return res.json({ message: 'Password updated successfully' });
   } catch (err) {
-    res.status(500).json({ message: 'Password update failed', error: err.message });
+    console.error('Dashboard updatePassword error:', err);
+    return res.status(500).json({ message: 'Password update failed', error: err.message });
   }
 };
