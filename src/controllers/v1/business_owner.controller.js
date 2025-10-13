@@ -195,6 +195,8 @@ exports.updateBusinessOwner = async (req, res, next) => {
         status: user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status),
         at: new Date().toISOString(),
       });
+
+      
     }
 
     res.json({ message: 'Business Owner updated', user });
@@ -202,40 +204,142 @@ exports.updateBusinessOwner = async (req, res, next) => {
 };
 
 // shared list builder
+
+// function buildListOptions({ status, q, limit, offset } = {}) {
+//   const where = { role: 'BUSINESS_OWNER' };
+//   if (status) where.status = String(status).toUpperCase();
+
+//   if (q) {
+//     where[Op.or] = [
+//       { fullName:     { [Op.like]: `%${q}%` } },
+//       { businessName: { [Op.like]: `%${q}%` } },
+//       { phoneNumber:  { [Op.like]: `%${q}%` } },
+//       { bsgCustId:    { [Op.like]: `%${q}%` } },
+//       { email:        { [Op.like]: `%${q}%` } }, // only if column exists
+//     ];
+//   }
+
+//   const findOptions = {
+//     where,
+//     attributes: [
+//       'id','phoneNumber','fullName','businessName','vatNumber',
+//       'businessAddress','bsgCustId','salesRepId','status','email',
+//       'createdAt','updatedAt'
+//     ],
+//     order: [['createdAt', 'DESC']],
+//   };
+
+//   if (limit)  findOptions.limit  = parseInt(limit, 10);
+//   if (offset) findOptions.offset = parseInt(offset, 10);
+
+//   return findOptions;
+// }
+
+// exports.listBusinessOwners = async (req, res, next) => {
+//   try {
+//     const { status, q, limit, offset } = req.query;
+//     const opts = buildListOptions({ status, q, limit, offset });
+//     const users = await User.findAll(opts);
+//     res.json(users);
+//   } catch (e) { next(e); }
+// };
+
+// exports.listPendingBusinessOwners = async (req, res, next) => {
+//   try {
+//     const opts = buildListOptions({ status: 'PENDING', ...req.query });
+//     const users = await User.findAll(opts);
+//     res.json(users);
+//   } catch (e) { next(e); }
+// };
+
+// exports.listApprovedBusinessOwners = async (req, res, next) => {
+//   try {
+//     const opts = buildListOptions({ status: 'APPROVED', ...req.query });
+//     const users = await User.findAll(opts);
+//     res.json(users);
+//   } catch (e) { next(e); }
+// };
+
+
+
+// helper builds base find options (you already have it)
 function buildListOptions({ status, q, limit, offset } = {}) {
   const where = { role: 'BUSINESS_OWNER' };
   if (status) where.status = String(status).toUpperCase();
-
   if (q) {
     where[Op.or] = [
-      { fullName:     { [Op.like]: `%${q}%` } },
+      { fullName: { [Op.like]: `%${q}%` } },
       { businessName: { [Op.like]: `%${q}%` } },
-      { phoneNumber:  { [Op.like]: `%${q}%` } },
-      { bsgCustId:    { [Op.like]: `%${q}%` } },
-      { email:        { [Op.like]: `%${q}%` } }, // only if column exists
+      { phoneNumber: { [Op.like]: `%${q}%` } },
+      { bsgCustId: { [Op.like]: `%${q}%` } },
+      { email: { [Op.like]: `%${q}%` } },
     ];
   }
-
-  const findOptions = {
+  const opts = {
     where,
     attributes: [
       'id','phoneNumber','fullName','businessName','vatNumber',
       'businessAddress','bsgCustId','salesRepId','status','email',
       'createdAt','updatedAt'
     ],
-    order: [['createdAt', 'DESC']],
+    order: [['createdAt','DESC']],
   };
-
-  if (limit)  findOptions.limit  = parseInt(limit, 10);
-  if (offset) findOptions.offset = parseInt(offset, 10);
-
-  return findOptions;
+  if (limit)  opts.limit  = parseInt(limit, 10);
+  if (offset) opts.offset = parseInt(offset, 10);
+  return opts;
 }
+
+// 🔒 Narrow scope for Branch Manager
+// 🔒 Scope BOs for the logged-in Branch Manager
+async function scopeForBranchManager(req, opts) {
+  if (req.user.role !== 'BRANCH_MANAGER') return opts;
+
+  // 1️⃣ Get manager code from the Branch Manager's own record
+  let managerKey = (req.user.branchManagerId || '').trim();
+  if (!managerKey) {
+    const me = await User.findByPk(req.user.id, {
+      attributes: ['branchManagerId'],
+      raw: true,
+    });
+    managerKey = (me?.branchManagerId || '').trim();
+  }
+
+  if (!managerKey) {
+    // no manager code → show nothing
+    opts.where.salesRepId = { [Op.in]: ['__none__'] };
+    return opts;
+  }
+
+  // 2️⃣ Find all Sales Reps under this Branch Manager
+  const reps = await User.findAll({
+    where: {
+      role: 'SALES_REP',
+      branchManagerId: managerKey,  // match by manager code
+    },
+    attributes: ['salesRepId'],
+    raw: true,
+  });
+
+  const repCodes = reps.map(r => (r.salesRepId || '').trim()).filter(Boolean);
+
+  // 3️⃣ Restrict Business Owners to those reps
+  if (!repCodes.length) {
+    opts.where.salesRepId = { [Op.in]: ['__none__'] };
+    return opts;
+  }
+
+  opts.where.salesRepId = { [Op.in]: repCodes };
+
+  console.log(`👔 BranchManager(${managerKey}) sees reps:`, repCodes);
+  return opts;
+}
+
 
 exports.listBusinessOwners = async (req, res, next) => {
   try {
     const { status, q, limit, offset } = req.query;
-    const opts = buildListOptions({ status, q, limit, offset });
+    let opts = buildListOptions({ status, q, limit, offset });
+    opts = await scopeForBranchManager(req, opts);
     const users = await User.findAll(opts);
     res.json(users);
   } catch (e) { next(e); }
@@ -243,7 +347,8 @@ exports.listBusinessOwners = async (req, res, next) => {
 
 exports.listPendingBusinessOwners = async (req, res, next) => {
   try {
-    const opts = buildListOptions({ status: 'PENDING', ...req.query });
+    let opts = buildListOptions({ status: 'PENDING', ...req.query });
+    opts = await scopeForBranchManager(req, opts);
     const users = await User.findAll(opts);
     res.json(users);
   } catch (e) { next(e); }
@@ -251,11 +356,9 @@ exports.listPendingBusinessOwners = async (req, res, next) => {
 
 exports.listApprovedBusinessOwners = async (req, res, next) => {
   try {
-    const opts = buildListOptions({ status: 'APPROVED', ...req.query });
+    let opts = buildListOptions({ status: 'APPROVED', ...req.query });
+    opts = await scopeForBranchManager(req, opts);
     const users = await User.findAll(opts);
     res.json(users);
   } catch (e) { next(e); }
 };
-
-
-

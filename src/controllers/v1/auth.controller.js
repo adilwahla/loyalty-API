@@ -6,7 +6,8 @@ const db = require('../../models'); // ✅ central model loader
 
 const User = db.User;
 const UserRole = db.UserRole;
-const sendSms = require('../../utils/sendMobishastraSms');
+// const sendSms = require('../../utils/sendMobishastraSms');
+const { sendMobishastraSms: sendSms } = require('../../utils/sendMobishastraSms');
 const normalizePhone = require('../../utils/normalizePhone');
 const { setOtp, verifyOtp, clearOtp } = require('../../utils/otpCache');
 const { emitBOCreated } = require('../../utils/boEvents');

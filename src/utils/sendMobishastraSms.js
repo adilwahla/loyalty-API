@@ -56,7 +56,7 @@ function buildParams({ phone, message }) {
 async function sendApprovalSms(phone) {
   try {
     const english =
-      'BG Oil Rewards: Your profile has been approved. You can now log in to the mobile app, scan QR codes to activate warranties, and redeem rewards.';
+      'BG Loyalty Rewards: Your profile has been approved. You can now log in to the mobile app, scan QR codes to activate warranties, and redeem rewards.';
     const arabic =
       'مكافآت بي جي أويل: تم اعتماد ملفك. يمكنك الآن تسجيل الدخول إلى تطبيق الجوال ومسح رموز QR لتفعيل الضمان واستبدال النقاط بالمكافآت.';
     const message = `${english}\n${arabic}`;
@@ -71,5 +71,5 @@ async function sendApprovalSms(phone) {
   }
 }
 
-// module.exports = sendMobishastraSms;
-module.exports = { sendMobishastraSms, sendApprovalSms };
+ // module.exports = sendMobishastraSms;
+ module.exports = { sendMobishastraSms, sendApprovalSms };

@@ -1,8 +1,20 @@
 // src/services/v1/warrantyScan.service.js
-const { WarrantyScan, User,UserRole , BrandMaster ,TechnicianBusinessOwnerLink} = require('../../models');
+const { WarrantyScan,sequelize, User,UserRole , BrandMaster ,TechnicianBusinessOwnerLink} = require('../../models');
 const { toWarrantyView } = require('../../utils/warrantyTransform');
 const { getWarrantyFromWP } = require('../../utils/getWarrantyFromWP');
 const { emitAnalytics } = require('../../utils/analytics.emit');
+class DuplicateScanError extends Error {
+  constructor(msg = 'Duplicate scan not allowed') {
+    super(msg);
+    this.name = 'DuplicateScanError';
+    this.code = 'DUPLICATE';
+    this.http = 409;
+  }
+}
+exports.DuplicateScanError = DuplicateScanError;
+
+
+
 exports.createScan = async ({ userId, timestamp, geolocation, points, productName, sku,brand, brandType, warrantyNumber }) => {
   return WarrantyScan.create({
     userId,
@@ -21,17 +33,34 @@ exports.createScan = async ({ userId, timestamp, geolocation, points, productNam
 };
 
 
-exports.getAllScans = async (filter = {}) => {
-  return WarrantyScan.findAll({
-    where: filter,
-    include: [{
+exports.getAllScans = (opts = {}) => {
+  const {
+    where = {},
+    include = [{
       model: User,
       as: 'user',
-      attributes: ['fullName', 'role', 'phoneNumber'],
+      attributes: ['fullName','role','phoneNumber','salesRepId'],
+      required: true,
     }],
-    order: [['createdAt', 'DESC']],
+    order = [['createdAt','DESC']],
+    limit,
+    offset,
+  } = opts;
+
+  return WarrantyScan.findAll({
+    where,
+    include,
+    order,
+    ...(limit ? { limit } : {}),
+    ...(offset ? { offset } : {}),
   });
 };
+
+exports.findByIdWithUser = (id) =>
+  WarrantyScan.findByPk(id, {
+    include: [{ model: User, as: 'user', attributes: ['id','salesRepId'] }],
+  });
+
 
 
 exports.getUserScans = async (userId) => {

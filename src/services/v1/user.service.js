@@ -19,6 +19,25 @@ exports.update = async (id, data) => {
   if (!user) throw new Error('User not found');
   return await user.update(data);
 };
+// exports.update = async (id, data) => {
+//   const user = await User.findByPk(id);
+//   if (!user) throw new Error('User not found');
+
+//   const updates = {};
+//   ['fullName','phone','role','isActive'].forEach((k) => {
+//     if (Object.prototype.hasOwnProperty.call(data, k)) {
+//       updates[k] = data[k];
+//     }
+//   });
+
+//   // only set password if provided and non-empty
+//   if (typeof data.password === 'string' && data.password.trim() !== '') {
+//     updates.password = data.password;
+//   }
+
+//   await user.update(updates); // instance.update runs hooks
+//   return user; // or return sanitized object
+// };
 
 exports.remove = async (id) => {
   const user = await User.findByPk(id);

@@ -4,7 +4,7 @@ const { User, BranchManager } = require('../models');
 const { sendMail } = require('./mailer');
 
 // CSV in .env, e.g. REDEMPTION_APPROVAL_TO="someone@example.com,ops@example.com"
-const DEFAULT_RECIPIENTS = (process.env.REDEMPTION_APPROVAL_TO || 'ar.ahmed@bin-shihon.com')
+const DEFAULT_RECIPIENTS = (process.env.REDEMPTION_APPROVAL_TO)
   .split(',').map((s) => s.trim()).filter(Boolean);
 
 // Optional CC/BCC via env if you want (safe to leave empty)
@@ -78,43 +78,47 @@ const BOTTOM_RESERVED = SIG_BLOCK_HEIGHT + FOOTER_HEIGHT; // 186pt
  * Draw a two-column signature block for Sales Rep and Branch Manager.
  * Returns total height consumed (matches SIG_BLOCK_HEIGHT).
  */
-function drawSignatureBlock(doc) {
+function drawSignatureBlock(doc, customerName = '') {
   const startY = doc.y;
   const startX = 42;
-  const colGap = 24;
-  const rightEdge = 553; // pageWidth - marginRight for A4 with 42 margins
-  const totalUsableWidth = rightEdge - startX;               // 553 - 42 = 511
-  const colWidth = (totalUsableWidth - colGap) / 2;          // split width equally
-  const leftX = startX;
-  const rightX = startX + colWidth + colGap;
+  const colGap = 18;
+  const rightEdge = 553; // A4 width - 2×42 margins
+  const totalUsableWidth = rightEdge - startX; // 511 usable width
 
-  // Left column
-  doc.fontSize(12).font('Helvetica-Bold').fillColor('black').text('Sales Representative', leftX, startY);
-  doc.font('Helvetica').fontSize(10).text('Name:', leftX, doc.y + 6);
-  const nameLineYLeft = doc.y + 12;
-  doc.moveTo(leftX + 36, nameLineYLeft).lineTo(leftX + colWidth, nameLineYLeft).strokeColor('#aaaaaa').stroke();
+  // Three equal columns
+  const colWidth = (totalUsableWidth - colGap * 2) / 3;
+  const col1X = startX;
+  const col2X = col1X + colWidth + colGap;
+  const col3X = col2X + colWidth + colGap;
 
-  const sigTopLeft = nameLineYLeft + 12;
-  doc.fontSize(10).fillColor('#444').text('Signature / Stamp:', leftX, sigTopLeft);
-  const leftBoxTop = sigTopLeft + 14;
-  doc.rect(leftX, leftBoxTop, colWidth, SIG_BOX_HEIGHT).strokeColor('#888888').stroke();
+  const drawSigColumn = (x, title, name) => {
+    doc.fontSize(12).font('Helvetica-Bold').fillColor('black').text(title, x, startY);
+    doc.font('Helvetica').fontSize(10).text('Name:', x, doc.y + 6);
+    const nameLineY = doc.y + 12;
+    const nameText = name ? ` ${name}` : '';
+    if (nameText) doc.text(nameText, x + 36, nameLineY - 12);
 
-  // Right column
-  doc.fillColor('black').font('Helvetica-Bold').fontSize(12).text('Branch Manager', rightX, startY);
-  doc.font('Helvetica').fontSize(10).text('Name:', rightX, doc.y + 6);
-  const nameLineYRight = doc.y + 12;
-  doc.moveTo(rightX + 36, nameLineYRight).lineTo(rightX + colWidth, nameLineYRight).strokeColor('#aaaaaa').stroke();
+    doc.moveTo(x + 36, nameLineY).lineTo(x + colWidth, nameLineY)
+      .strokeColor('#aaaaaa').stroke();
 
-  const sigTopRight = nameLineYRight + 12;
-  doc.fontSize(10).fillColor('#444').text('Signature / Stamp:', rightX, sigTopRight);
-  const rightBoxTop = sigTopRight + 14;
-  doc.rect(rightX, rightBoxTop, colWidth, SIG_BOX_HEIGHT).strokeColor('#888888').stroke();
+    const sigTop = nameLineY + 12;
+    doc.fontSize(10).fillColor('#444').text('Signature / Stamp:', x, sigTop);
+    const boxTop = sigTop + 14;
+    doc.rect(x, boxTop, colWidth, SIG_BOX_HEIGHT)
+      .strokeColor('#888888').stroke();
 
-  // Keep cursor consistent (below the lowest box)
-  const endY = Math.max(leftBoxTop + SIG_BOX_HEIGHT, rightBoxTop + SIG_BOX_HEIGHT);
+    return boxTop + SIG_BOX_HEIGHT;
+  };
+
+  const endYLeft = drawSigColumn(col1X, 'Sales Representative');
+  const endYCenter = drawSigColumn(col2X, 'Branch Manager');
+  const endYRight = drawSigColumn(col3X, 'Customer', customerName);
+
+  const endY = Math.max(endYLeft, endYCenter, endYRight);
   doc.y = endY + 12;
   return SIG_BLOCK_HEIGHT;
 }
+
 const plain = (v) => (v === null || v === undefined ? '' : String(v));
 /**
  * Build a simple 1-page PDF summary and return as Buffer
@@ -182,7 +186,9 @@ function buildRedemptionPdf(data = {}) {
     doc.y = sigStartY2;
 
     // Signature block
-    drawSignatureBlock(doc);
+    // Signature block (include customer name for display)
+    drawSignatureBlock(doc, data.name || '');
+
 
     // Footer
     doc.moveDown(0.4);
@@ -203,14 +209,15 @@ function buildApprovalEmailHtml(payload) {
       <p>The following redemption request has been <b>APPROVED</b>:</p>
       <table cellpadding="6" cellspacing="0" border="0" style="border-collapse:collapse">
       
-        <tr><td><b>User</b></td><td>${payload.name ?? ''} (${payload.role ?? ''})</td></tr>
+        <tr><td><b>Name</b></td><td>${payload.name ?? ''} (${payload.role ?? ''})</td></tr>
         <tr><td><b>Phone</b></td><td>${payload.phone ?? ''}</td></tr>
         <tr><td><b>Reward</b></td><td>${payload.rewards ?? ''}</td></tr>
         <tr><td><b>Required Points</b></td><td>${payload.requiredPoints ?? ''}</td></tr>
         <tr><td><b>Points Accumulated</b></td><td>${payload.pointsAccumulated ?? ''}</td></tr>
         <tr><td><b>Location</b></td><td>${payload.location ?? ''}</td></tr>
-        <tr><td><b>Requested At</b></td><td>${payload.requestDate ?? ''}</td></tr>
-        <tr><td><b>Approved At</b></td><td>${new Date().toISOString()}</td></tr>
+        <tr><td><b>Requested At</b></td><td>${prettyDate (payload.requestDate )?? ''}</td></tr>
+        <tr><td><b>Approved At</b></td><td>${prettyDate(new Date())}</td></tr>
+
       </table>
       <p style="margin-top:16px">PDF summary is attached.</p>
       <p style="margin-top:16px">— Redemption System</p>
@@ -224,15 +231,16 @@ function buildStakeholderEmailHtml(redemption) {
       <h2 style="margin:0 0 8px">Redemption Approved</h2>
       <p>A redemption request has been <b>APPROVED</b>:</p>
       <table cellpadding="6" cellspacing="0" border="0" style="border-collapse:collapse">
-        // <tr><td><b>ID</b></td><td>${redemption?.id ?? ''}</td></tr>
+     
         <tr><td><b>User</b></td><td>${redemption?.name ?? ''} (${redemption?.role ?? ''})</td></tr>
         <tr><td><b>Phone</b></td><td>${redemption?.phone ?? ''}</td></tr>
         <tr><td><b>Reward</b></td><td>${redemption?.rewards ?? redemption?.rewardId ?? ''}</td></tr>
         <tr><td><b>Required Points</b></td><td>${redemption?.requiredPoints ?? redemption?.pointsConsumed ?? ''}</td></tr>
         <tr><td><b>Points Accumulated</b></td><td>${redemption?.pointsAccumulated ?? ''}</td></tr>
         <tr><td><b>Location</b></td><td>${redemption?.location ?? ''}</td></tr>
-        <tr><td><b>Requested At</b></td><td>${redemption?.requestDate ?? ''}</td></tr>
-        <tr><td><b>Approved At</b></td><td>${new Date().toISOString()}</td></tr>
+       <tr><td><b>Requested At</b></td><td>${prettyDate(redemption?.requestDate)}</td></tr>
+        <tr><td><b>Approved At</b></td><td>${prettyDate(new Date())}</td></tr>
+
       </table>
       <p style="margin-top:16px">PDF summary is attached.</p>
       <p style="margin-top:16px">— Redemption System</p>
@@ -276,6 +284,74 @@ async function sendApprovalEmail(payload) {
  * @param {Object} redemption - Sequelize instance or plain object with keys:
  *   salesRepUserId, rewardId, pointsConsumed, userId, name, role, phone, rewards, ...
  */
+// async function sendEmailToRedemptionStakeholders(redemption) {
+//   try {
+//     const toRecipients = new Set(DEFAULT_RECIPIENTS);
+//     const ccRecipients = new Set(DEFAULT_CC);
+//     const bccRecipients = new Set(DEFAULT_BCC);
+
+//     if (redemption?.userId) {
+//       // 1️⃣ Load actor
+//       const actor = await User.findByPk(String(redemption.userId)).catch(() => null);
+//       if (actor) {
+//         if (actor.email) {
+//           toRecipients.add(actor.email);
+//           console.log('[EMAIL] + Added actor email to TO:', actor.email);
+//         }
+
+//         // 2️⃣ Find sales rep by actor.salesRepId
+//         if (actor.salesRepId) {
+//           const rep = await User.findOne({
+//             where: { role: 'SALES_REP', binShihonWorkerId: actor.salesRepId },
+//           }).catch(() => null);
+
+//           if (rep?.email) {
+//             ccRecipients.add(rep.email);
+//             console.log('[EMAIL] + Added sales rep email to CC:', rep.email, '(id:', rep.id, ', code:', actor.salesRepId, ')');
+//           } else {
+//             console.log('[EMAIL] No SALES_REP found with binShihonWorkerId =', actor.salesRepId);
+//           }
+//         } else {
+//           console.log('[EMAIL] Actor has no salesRepId value');
+//         }
+//       } else {
+//         console.warn('[EMAIL] Actor not found for userId:', redemption.userId);
+//       }
+//     }
+
+//     if (!toRecipients.size) {
+//       console.warn('[EMAIL] No TO recipients; skipping send');
+//       return;
+//     }
+
+//     const to = Array.from(toRecipients);
+//     const cc = Array.from(ccRecipients);
+//     const bcc = Array.from(bccRecipients);
+
+//     console.log('[EMAIL] FINAL TO:', to, 'CC:', cc, 'BCC:', bcc);
+
+//     const subject = `✅ Redemption Approved — ${redemption?.rewards ?? redemption?.rewardId ?? ''}`;
+//     const html = buildStakeholderEmailHtml(redemption);
+
+//     let attachments = [];
+//     if (ATTACH_PDF) {
+//       try {
+//         const pdfBuffer = await buildRedemptionPdf(redemption);
+//         attachments.push({
+//           filename: `Redemption-${redemption?.id || 'summary'}.pdf`,
+//           content: pdfBuffer,
+//           contentType: 'application/pdf',
+//         });
+//       } catch (e) {
+//         console.error('[EMAIL] PDF build failed (stakeholders):', e.message);
+//       }
+//     }
+
+//     await sendMail({ to, subject, html, cc, bcc, attachments });
+//   } catch (err) {
+//     console.error('[EMAIL ERROR]', err.message);
+//   }
+// }
 async function sendEmailToRedemptionStakeholders(redemption) {
   try {
     const toRecipients = new Set(DEFAULT_RECIPIENTS);
@@ -283,34 +359,54 @@ async function sendEmailToRedemptionStakeholders(redemption) {
     const bccRecipients = new Set(DEFAULT_BCC);
 
     if (redemption?.userId) {
-      // 1️⃣ Load actor
+      // 1️⃣ Load the actor (Customer / BO / Technician)
       const actor = await User.findByPk(String(redemption.userId)).catch(() => null);
+      let salesRep = null; // declare outside to use later
+
       if (actor) {
+        // Actor email → TO
         if (actor.email) {
           toRecipients.add(actor.email);
           console.log('[EMAIL] + Added actor email to TO:', actor.email);
         }
 
-        // 2️⃣ Find sales rep by actor.salesRepId
+        // 2️⃣ Find Sales Rep by actor.salesRepId
         if (actor.salesRepId) {
-          const rep = await User.findOne({
-            where: { role: 'SALES_REP', binShihonWorkerId: actor.salesRepId },
+          salesRep = await User.findOne({
+            where: { salesRepId: actor.salesRepId, role: 'SALES_REP' },
           }).catch(() => null);
 
-          if (rep?.email) {
-            ccRecipients.add(rep.email);
-            console.log('[EMAIL] + Added sales rep email to CC:', rep.email, '(id:', rep.id, ', code:', actor.salesRepId, ')');
+          if (salesRep?.email) {
+            ccRecipients.add(salesRep.email);
+            console.log('[EMAIL] + Added Sales Rep email to CC:', salesRep.email, '(id:', actor.salesRepId, ')');
           } else {
-            console.log('[EMAIL] No SALES_REP found with binShihonWorkerId =', actor.salesRepId);
+            console.log('[EMAIL] No SALES_REP found with id =', actor.salesRepId);
           }
         } else {
-          console.log('[EMAIL] Actor has no salesRepId value');
+          console.log('[EMAIL] Actor has no salesRepId');
+        }
+
+        // 3️⃣ Find Branch Manager via salesRep.branchManagerId
+        if (salesRep?.branchManagerId) {
+          const branchManager = await User.findOne({
+            where: { branchManagerId: salesRep.branchManagerId, role: 'BRANCH_MANAGER' },
+          }).catch(() => null);
+
+          if (branchManager?.email) {
+            ccRecipients.add(branchManager.email);
+            console.log('[EMAIL] + Added Branch Manager email to CC:', branchManager.email, '(id:', salesRep.branchManagerId, ')');
+          } else {
+            console.log('[EMAIL] No BRANCH_MANAGER found with id =', salesRep.branchManagerId);
+          }
+        } else {
+          console.log('[EMAIL] Sales Rep has no branchManagerId field');
         }
       } else {
         console.warn('[EMAIL] Actor not found for userId:', redemption.userId);
       }
     }
 
+    // 4️⃣ Ensure there’s at least one TO recipient
     if (!toRecipients.size) {
       console.warn('[EMAIL] No TO recipients; skipping send');
       return;
@@ -339,11 +435,12 @@ async function sendEmailToRedemptionStakeholders(redemption) {
       }
     }
 
-    await sendMail({ to, subject, html, cc, bcc, attachments });
+    await sendMail({ to, cc, bcc, subject, html, attachments });
   } catch (err) {
     console.error('[EMAIL ERROR]', err.message);
   }
 }
+
 
 module.exports = {
   sendApprovalEmail,

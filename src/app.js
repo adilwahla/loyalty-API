@@ -2,13 +2,14 @@ const express = require('express');
 const dotenv = require('dotenv');
 const bodyParser = require('body-parser');
 const sequelize = require('../config/database');
-const { swaggerUi, swaggerSpec } = require('./docs/swagger');
+// const { swaggerUi, swaggerSpec } = require('./docs/swagger');
 const path = require('path');
 const cors = require('cors');
 const { app, server } = require('../config/server');
 const multer = require('multer');
 // const { testWordpressConnection } = require('../config/wordpress.database');
-
+// Access io that was set in server.js
+const io = app.get('io');
 
 dotenv.config();
 // const app = express();
@@ -34,7 +35,7 @@ app.use((err, req, res, next) => {
   return res.status(500).json({ ok: false, message: err.message || 'Server error' });
 });
 // Swagger docs
-app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+//app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 // ✅ Health check ping
 app.use('/api/v1/ping', require('./routes/api/v1/ping.routes'));
 
@@ -107,14 +108,38 @@ const analyticsRoutes = require('./routes/api/v1/admin/analytics.routes');
 // ✅ Prefix with /api/v1/analytics
 app.use('/api/v1/analytics', analyticsRoutes);
 
+app.get('/mem', (req, res) => {
+  const m = process.memoryUsage();
+  res.json({
+    rssMB: (m.rss / 1024 / 1024).toFixed(1),
+    heapUsedMB: (m.heapUsed / 1024 / 1024).toFixed(1),
+    heapTotalMB: (m.heapTotal / 1024 / 1024).toFixed(1),
+    externalMB: (m.external / 1024 / 1024).toFixed(1),
+    arrayBuffersMB: (m.arrayBuffers / 1024 / 1024).toFixed(1),
+    uptimeSec: process.uptime().toFixed(0),
+    nodeVersion: process.version,
+  });
+});
+
+
+
 // Sync DB and start server
 sequelize.sync().then(() => {
   console.log('✅ Database synced');
   const PORT = process.env.PORT || 3000;
   server.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 Server running on http://0.0.0.0:${PORT}`);
-    console.log(`📚 Swagger docs at http://localhost:${PORT}/api-docs`);
+ //   console.log(`📚 Swagger docs at http://localhost:${PORT}/api-docs`);
   });
 }).catch((err) => {
   console.error('❌ Failed to sync database:', err);
 });
+
+app.get('/socket-health', (req, res) => {
+  res.json({ ok: true, path: io && io._opts && io._opts.path });
+});
+
+// setInterval(() => {
+//   const m = process.memoryUsage();
+//   console.log(`[MEM] rss: ${(m.rss/1024/1024).toFixed(1)}MB, heapUsed: ${(m.heapUsed/1024/1024).toFixed(1)}MB`);
+// }, 100000);
