@@ -129,54 +129,16 @@ app.get('/mem', (req, res) => {
 const taskRoutes = require("./routes/api/v1/taskRoutes");
 app.use("/api/v1/tasks", taskRoutes);
 
-
-function dropIndixWhenAlter() {
-
-(async () => {
-  const [results] = await sequelize.query(`
-    SELECT INDEX_NAME
-    FROM information_schema.STATISTICS
-    WHERE TABLE_SCHEMA = DATABASE()
-    AND TABLE_NAME = 'user_roles'
-    AND COLUMN_NAME = 'roleName'
-    AND INDEX_NAME != 'PRIMARY';
-  `);
-
-  for (const row of results) {
-    console.log('Dropping index:', row.INDEX_NAME);
-    await sequelize.query(`ALTER TABLE user_roles DROP INDEX \`${row.INDEX_NAME}\`;`);
-  }
-
-  console.log('✅ All duplicate indexes dropped');
-
-})();
-}
-
-// if (process.env.ALTER_DB_TABLES==='true') {
-//   dropIndixWhenAlter(); 
-// }
-// Sync DB and start server
-// Sync DB and start server
-const shouldAlter = process.env.ALTER_DB_TABLES === 'true';
-if (shouldAlter) {
-  // Only sync Task model to add description column, avoiding foreign key issues
-  const { Task } = require('./models');
-  Task.sync({ alter: true }).then(() => {
-    console.log('✅ Task table synced (description column added)');
-    startServer();
-  }).catch((err) => {
-    console.error('❌ Failed to sync Task table:', err);
-    startServer(); // Start server anyway
-  });
-} else {
-  sequelize.sync().then(() => {
+// Sync DB and start server (simple, reliable path now that migrations are done)
+sequelize.sync()
+  .then(() => {
     console.log('✅ Database synced');
     startServer();
-  }).catch((err) => {
+  })
+  .catch((err) => {
     console.error('❌ Failed to sync database:', err);
     startServer(); // Start server anyway
   });
-}
 
 function startServer() {
   const PORT = process.env.PORT || 5000;

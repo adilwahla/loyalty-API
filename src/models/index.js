@@ -13,6 +13,7 @@ const WarrantyRedemptionModel = require('./warrantyRedemption.model');
 const SalesRepModel = require('./salesRep.model');
 const BranchManagerModel = require('./branchManager.model');
 const Task = require("./task");
+const TaskReassignHistory = require("./taskReassignHistory.model");
 
 
 const WarrantyScan  = require('./WarrantyScan.model')(sequelize, DataTypes);
@@ -98,6 +99,27 @@ Task.belongsTo(User, {
   as: "user"
 });
 
+// TaskReassignHistory associations
+TaskReassignHistory.belongsTo(Task, {
+  foreignKey: "taskId",
+  as: "task"
+});
+
+Task.hasMany(TaskReassignHistory, {
+  foreignKey: "taskId",
+  as: "reassignHistory"
+});
+
+TaskReassignHistory.belongsTo(User, {
+  foreignKey: "oldUserId",
+  as: "oldUser"
+});
+
+TaskReassignHistory.belongsTo(User, {
+  foreignKey: "newUserId",
+  as: "newUser"
+});
+
 
 
 // Export all models
@@ -121,5 +143,6 @@ module.exports = {
   BrandMaster,
   TechnicianBusinessOwnerLink,
   UsedQrNonce,
-  Task
+  Task,
+  TaskReassignHistory
 };

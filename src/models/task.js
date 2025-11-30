@@ -70,6 +70,11 @@ const Task = sequelize.define(
       type: DataTypes.TEXT,
       allowNull: true
     },
+    updatedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: 'updated_at'
+    },
   },
   {
     tableName: "tasks",

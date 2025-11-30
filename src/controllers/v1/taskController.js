@@ -129,6 +129,42 @@ exports.updateTask = async (req, res) => {
   }
 };
 
+// ✅ Reassign task
+exports.reassignTask = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { newUserId, newEndDate, reason } = req.body;
+
+    // Validate required fields
+    if (!newUserId) {
+      return res.status(400).json(error("Missing newUserId"));
+    }
+    if (!newEndDate) {
+      return res.status(400).json(error("Missing newEndDate"));
+    }
+
+    const task = await taskService.reassignTask(id, newUserId, newEndDate, reason);
+    if (!task) return res.status(404).json(error("Task not found"));
+
+    // Get socket instance
+    const io = req.app.get('io');
+    if (io && task) {
+      // Emit task assigned event for reassignment
+      if (task.oldUserId && task.oldUserId !== task.userId) {
+        emitTaskAssigned(io, task, task.oldUserId);
+      }
+    }
+
+    // Remove oldUserId from response (it was only for internal use)
+    const taskData = task.toJSON ? task.toJSON() : task;
+    const { oldUserId, ...taskResponse } = taskData;
+
+    res.json(success("Task reassigned successfully", taskResponse));
+  } catch (err) {
+    res.status(500).json(error("Failed to reassign task", err.message));
+  }
+};
+
 // ✅ Delete task
 exports.deleteTask = async (req, res) => {
   try {

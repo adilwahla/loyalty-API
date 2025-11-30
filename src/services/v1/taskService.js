@@ -1,5 +1,5 @@
 const { Op } = require("sequelize");
-const { Task, User } = require("../../models");
+const { Task, User, TaskReassignHistory, sequelize } = require("../../models");
 
 // Valid task type values
 const VALID_TASK_TYPES = ["Collection", "Promotion", "Up/Cross sell"];
@@ -37,7 +37,20 @@ class TaskService {
   }
 
   async getTaskById(id) {
-    return await Task.findByPk(id, { include: [{ model: User, as: "user" }] });
+    return await Task.findByPk(id, { 
+      include: [
+        { model: User, as: "user" },
+        { 
+          model: TaskReassignHistory, 
+          as: "reassignHistory",
+          include: [
+            { model: User, as: "oldUser", attributes: ["id", "fullName", "phoneNumber"] },
+            { model: User, as: "newUser", attributes: ["id", "fullName", "phoneNumber"] }
+          ],
+          order: [["changedAt", "DESC"]]
+        }
+      ]
+    });
   }
 
   async getTaskByUser(userId) {
@@ -117,6 +130,86 @@ class TaskService {
     if (!task) return null;
     await task.destroy();
     return true;
+  }
+
+  async reassignTask(taskId, newUserId, newEndDate, reason) {
+    const transaction = await sequelize.transaction();
+    
+    try {
+      // Fetch current task to get oldUserId
+      const task = await Task.findByPk(taskId, { 
+        include: [{ model: User, as: "user" }],
+        transaction 
+      });
+      
+      if (!task) {
+        throw new Error("Task not found");
+      }
+
+      const oldUserId = task.userId;
+
+      // Validate that it's actually a reassignment
+      if (oldUserId === newUserId) {
+        throw new Error("Cannot reassign task to the same user");
+      }
+
+      // Validate newUserId exists
+      const newUser = await User.findByPk(newUserId, { transaction });
+      if (!newUser) {
+        throw new Error("New user not found");
+      }
+
+      // Update task with new userId, newEndDate, and updatedAt
+      await task.update(
+        {
+          userId: newUserId,
+          dateTo: newEndDate,
+          updatedAt: new Date()
+        },
+        { transaction }
+      );
+
+      // Insert record into task_reassign_history
+      await TaskReassignHistory.create(
+        {
+          taskId: taskId,
+          oldUserId: oldUserId,
+          newUserId: newUserId,
+          newEndDate: newEndDate,
+          reason: reason,
+          changedAt: new Date()
+        },
+        { transaction }
+      );
+
+      // Commit transaction
+      await transaction.commit();
+
+      // Reload task with relations for response
+      await task.reload({ 
+        include: [
+          { model: User, as: "user" },
+          { 
+            model: TaskReassignHistory, 
+            as: "reassignHistory",
+            include: [
+              { model: User, as: "oldUser", attributes: ["id", "fullName", "phoneNumber"] },
+              { model: User, as: "newUser", attributes: ["id", "fullName", "phoneNumber"] }
+            ],
+            order: [["changedAt", "DESC"]]
+          }
+        ]
+      });
+
+      // Return task with oldUserId for socket events
+      task.oldUserId = oldUserId;
+      
+      return task;
+    } catch (error) {
+      // Rollback transaction on error
+      await transaction.rollback();
+      throw error;
+    }
   }
 }
 

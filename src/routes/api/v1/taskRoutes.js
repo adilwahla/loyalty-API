@@ -7,6 +7,7 @@ router.get("/:id", taskController.getTaskById);
 
 router.post("/", taskController.createTask);
 router.put("/:id", taskController.updateTask);
+router.put("/:id/reassign", taskController.reassignTask);
 router.delete("/:id", taskController.deleteTask);
 
 
