@@ -44,6 +44,18 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       field: 'business_address',
     },
+    // this is new update
+    latitude: {
+      type: DataTypes.DECIMAL(10, 8),
+      allowNull: true,
+      field: 'latitude',
+    },
+    // this is new update
+    longitude: {
+      type: DataTypes.DECIMAL(11, 8),
+      allowNull: true,
+      field: 'longitude',
+    },
     binShihonWorkerId: {
       type: DataTypes.STRING,
       allowNull: true,
@@ -101,6 +113,12 @@ module.exports = (sequelize, DataTypes) => {
       type: DataTypes.STRING,
       allowNull: true,
       field: 'device_token',
+    },
+    // this is new update for group.
+    groupId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: 'groupId', // Database uses camelCase
     },
 
   }, {

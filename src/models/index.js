@@ -14,6 +14,8 @@ const SalesRepModel = require('./salesRep.model');
 const BranchManagerModel = require('./branchManager.model');
 const Task = require("./task");
 const TaskReassignHistory = require("./taskReassignHistory.model");
+// this is new update for group.
+const GroupModel = require("./group.model");
 
 
 const WarrantyScan  = require('./WarrantyScan.model')(sequelize, DataTypes);
@@ -33,6 +35,8 @@ const RedemptionRequest = RedemptionRequestModel(sequelize, DataTypes);
 const WarrantyRedemption = WarrantyRedemptionModel(sequelize, DataTypes);
 const SalesRep = SalesRepModel(sequelize, DataTypes);
 const BranchManager = BranchManagerModel(sequelize, DataTypes);
+// this is new update for group.
+const Group = GroupModel(sequelize, DataTypes);
 
 
 
@@ -99,6 +103,30 @@ Task.belongsTo(User, {
   as: "user"
 });
 
+// this is new update for group.
+// Task belongs to customer (business owner) via customerId -> bsgCustId
+Task.belongsTo(User, {
+  foreignKey: "customerId",
+  targetKey: "bsgCustId",
+  as: "customer",
+  required: false // Customer might not exist in users table
+});
+
+// this is new update for group.
+// Group associations
+// Note: Only business owners (customers) have groupId, sales reps and other users will have null
+User.belongsTo(Group, {
+  foreignKey: "groupId",
+  as: "group",
+  required: false // Allow null groupId (users without groups)
+});
+
+// this is new update for group.
+Group.hasMany(User, {
+  foreignKey: "groupId",
+  as: "users"
+});
+
 // TaskReassignHistory associations
 TaskReassignHistory.belongsTo(Task, {
   foreignKey: "taskId",
@@ -144,5 +172,7 @@ module.exports = {
   TechnicianBusinessOwnerLink,
   UsedQrNonce,
   Task,
-  TaskReassignHistory
+  TaskReassignHistory,
+  // this is new update for group.
+  Group
 };

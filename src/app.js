@@ -59,6 +59,10 @@ app.use('/api/v1/admin/user-roles', require('./routes/api/v1/admin/userRole.rout
 // ✅ User Routes
 app.use('/api/v1/admin/users', require('./routes/api/v1/admin/user.routes'));
 
+// this is new update for group.
+// ✅ Groups Routes (for filtering business owners by group)
+app.use('/api/v1/admin/groups', require('./routes/api/v1/admin/group.routes'));
+
 
 app.use('/api/v1/auth', require('./routes/api/v1/auth.routes'));
 

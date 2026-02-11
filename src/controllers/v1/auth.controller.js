@@ -110,7 +110,10 @@ exports.registerUser = async (req, res) => {
   const {
     phoneNumber, role, name,
     iqamaNumber, fullName, businessName,
-    vatNumber, businessAddress, bsgCustId, salesRepId, deviceToken, email
+    vatNumber, businessAddress,
+    // this is new update
+    latitude, longitude,
+    bsgCustId, salesRepId, deviceToken, email
   } = req.body;
 
   try {
@@ -148,6 +151,9 @@ exports.registerUser = async (req, res) => {
       businessName,
       vatNumber,
       businessAddress,
+      // this is new update
+      latitude: latitude ? parseFloat(latitude) : null,
+      longitude: longitude ? parseFloat(longitude) : null,
       bsgCustId,       // ✅ Now added
       salesRepId,      // ✅ Now added
       isOtpVerified: true, // ✅ Trust that verify-otp was already done
@@ -381,15 +387,51 @@ exports.forgotPasswordResetPassword = async (req, res) => {
 exports.loginSalesRep = async (req, res) => {
   //  console.log(`➡️ ${req.method} ${req.originalUrl}`);
   const { salesRepId, password } = req.body;
-  const user = await User.findOne({ where: { salesRepId } });
+  
+  console.log(`[LOGIN] SalesRep login attempt for ID: ${salesRepId}`);
+  
+  // ✅ Get ALL users with this salesRepId (ordered deterministically)
+  // This approach is more reliable than relying on database WHERE clause for role filtering
+  const allUsers = await User.findAll({ 
+    where: { 
+      salesRepId: salesRepId
+    },
+    order: [['createdAt', 'ASC']] // Makes it deterministic
+  });
+  
+  console.log(`[LOGIN] Found ${allUsers.length} user(s) with salesRepId: ${salesRepId}`);
+  allUsers.forEach(u => {
+    console.log(`[LOGIN]   - User ID: ${u.id}, Role: ${u.role}, SalesRepId: ${u.salesRepId}`);
+  });
+  
+  // ✅ Filter for SALES_REP role in JavaScript (case-insensitive, handles whitespace)
+  // This ensures we get the correct user even if database WHERE clause has issues
+  const user = allUsers.find(u => 
+    u.role && u.role.toUpperCase().trim() === 'SALES_REP'
+  );
+  
   if (!user) {
+    console.log(`[LOGIN] ❌ User not found - No SALES_REP user found with salesRepId: ${salesRepId}`);
     return res.status(403).json({
       success: false,
-      message: 'Invalid credentials eeeroe'
+      message: 'Invalid credentials'
     });
   }
 
-  console.log(user);
+  // ✅ Double-check role (defense in depth) - CRITICAL: Reject if not SALES_REP
+  const allowedRoles = ['SALES_REP'];
+  console.log(`[LOGIN] ✅ Selected SALES_REP user - ID: ${user.id}, Role: ${user.role}, Status: ${user.status}, SalesRepId: ${user.salesRepId}`);
+  
+  // This check should never fail now, but keeping it for safety
+  if (!allowedRoles.includes(user.role.toUpperCase().trim())) {
+    console.log(`[LOGIN] ❌ REJECTED - User role "${user.role}" is not allowed. Only SALES_REP can use this endpoint.`);
+    return res.status(403).json({
+      success: false,
+      message: 'This login endpoint is only for Sales Rep accounts. Please use the correct login method.'
+    });
+  }
+  
+  console.log(`[LOGIN] ✅ Role check passed - User is SALES_REP`);
   
   // if (!user.isOtpVerified) {
   //   return res.status(401).json({
@@ -416,15 +458,8 @@ exports.loginSalesRep = async (req, res) => {
     });
   }
 
-  if (user.role === 'SALES_REP' && user.status !== 'APPROVED') {
-    return res.status(403).json({
-      success: false,
-      code: 'BO_APPROVAL_REQUIRED',
-      message: 'Your account is pending admin approval.',
-      status: user.status, // 'PENDING' | 'REJECTED'
-    });
-  }
-
+  // ✅ SALES_REP role: Skip approval check - allow login regardless of status
+ 
 
   // ✅ Use JWT_EXPIRES_IN from environment variables
   const expiresIn = process.env.JWT_EXPIRES_IN || '7d';

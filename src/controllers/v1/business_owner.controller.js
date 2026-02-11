@@ -1,7 +1,8 @@
 // controllers/v1/business_owner.controller.js
 const { Op } = require('sequelize');
 const bcrypt = require('bcryptjs');
-const { User } = require('../../models');
+// this is new update for group.
+const { User, Group } = require('../../models');
 const { sendApprovalSms } = require('../../utils/sendMobishastraSms'); // <-- add this
 
 // ✅ Feature flag (default OFF)
@@ -107,10 +108,16 @@ exports.createBusinessOwner = async (req, res, next) => {
       businessName,
       vatNumber,
       businessAddress,
+      // this is new update
+      latitude,
+      // this is new update
+      longitude,
       bsgCustId,
       salesRepId,
       email,
       status,
+      // this is new update for group.
+      groupId,
     } = req.body;
 
     phoneNumber = normalizePhone(phoneNumber);
@@ -127,9 +134,15 @@ exports.createBusinessOwner = async (req, res, next) => {
       businessName: businessName || null,
       vatNumber: vatNumber || null,
       businessAddress: businessAddress || null,
+      // this is new update
+      latitude: latitude ? parseFloat(latitude) : null,
+      // this is new update
+      longitude: longitude ? parseFloat(longitude) : null,
       bsgCustId: bsgCustId || null,
       salesRepId: salesRepId || null,
       email: email || null,
+      // this is new update for group.
+      groupId: groupId ? parseInt(groupId, 10) : null,
       password: hashed,
       isOtpVerified: true,
       status: (status ? String(status).toUpperCase() : 'APPROVED'),
@@ -163,7 +176,13 @@ exports.createBusinessOwner = async (req, res, next) => {
 exports.updateBusinessOwner = async (req, res, next) => {
   try {
     const { userId } = req.params;
-    const { fullName, businessName, vatNumber, businessAddress, bsgCustId, salesRepId, email } = req.body;
+    // this is new update for group.
+    const { fullName, businessName, vatNumber, businessAddress,
+      // this is new update
+      latitude,
+      // this is new update
+      longitude,
+      bsgCustId, salesRepId, email, groupId } = req.body;
 
     const user = await User.findByPk(userId);
     if (!user) return res.status(404).json({ message: 'User not found' });
@@ -174,9 +193,15 @@ exports.updateBusinessOwner = async (req, res, next) => {
       businessName: businessName ?? user.businessName,
       vatNumber: vatNumber ?? user.vatNumber,
       businessAddress: businessAddress ?? user.businessAddress,
+      // this is new update
+      latitude: latitude !== undefined ? (latitude ? parseFloat(latitude) : null) : user.latitude,
+      // this is new update
+      longitude: longitude !== undefined ? (longitude ? parseFloat(longitude) : null) : user.longitude,
       bsgCustId: bsgCustId ?? user.bsgCustId,
       salesRepId: salesRepId ?? user.salesRepId,
       email: email ?? user.email,
+      // this is new update for group.
+      groupId: groupId !== undefined ? (groupId ? parseInt(groupId, 10) : null) : user.groupId,
     });
 
     const io = req.app.get('io');
@@ -263,9 +288,14 @@ exports.updateBusinessOwner = async (req, res, next) => {
 
 
 // helper builds base find options (you already have it)
-function buildListOptions({ status, q, limit, offset } = {}) {
+// this is new update for group.
+function buildListOptions({ status, q, limit, offset, groupId } = {}) {
   const where = { role: 'BUSINESS_OWNER' };
   if (status) where.status = String(status).toUpperCase();
+  // this is new update for group.
+  if (groupId !== undefined && groupId !== null && groupId !== '') {
+    where.groupId = parseInt(groupId, 10);
+  }
   if (q) {
     where[Op.or] = [
       { fullName: { [Op.like]: `%${q}%` } },
@@ -279,9 +309,23 @@ function buildListOptions({ status, q, limit, offset } = {}) {
     where,
     attributes: [
       'id','phoneNumber','fullName','businessName','vatNumber',
-      'businessAddress','bsgCustId','salesRepId','status','email',
+      'businessAddress',
+      // this is new update
+      'latitude',
+      // this is new update
+      'longitude',
+      'bsgCustId','salesRepId','status','email',
+      // this is new update for group.
+      'groupId',
       'createdAt','updatedAt'
     ],
+    // this is new update for group.
+    include: [{
+      model: Group,
+      as: 'group',
+      required: false, // LEFT JOIN - include users even without groups
+      attributes: ['groupId', 'groupName', 'groupNameAR', 'colorHex']
+    }],
     order: [['createdAt','DESC']],
   };
   if (limit)  opts.limit  = parseInt(limit, 10);
@@ -337,8 +381,9 @@ async function scopeForBranchManager(req, opts) {
 
 exports.listBusinessOwners = async (req, res, next) => {
   try {
-    const { status, q, limit, offset } = req.query;
-    let opts = buildListOptions({ status, q, limit, offset });
+    // this is new update for group.
+    const { status, q, limit, offset, groupId } = req.query;
+    let opts = buildListOptions({ status, q, limit, offset, groupId });
     opts = await scopeForBranchManager(req, opts);
     const users = await User.findAll(opts);
     res.json(users);
@@ -347,7 +392,9 @@ exports.listBusinessOwners = async (req, res, next) => {
 
 exports.listPendingBusinessOwners = async (req, res, next) => {
   try {
-    let opts = buildListOptions({ status: 'PENDING', ...req.query });
+    // this is new update for group.
+    const { q, limit, offset, groupId } = req.query;
+    let opts = buildListOptions({ status: 'PENDING', q, limit, offset, groupId });
     opts = await scopeForBranchManager(req, opts);
     const users = await User.findAll(opts);
     res.json(users);
@@ -356,7 +403,9 @@ exports.listPendingBusinessOwners = async (req, res, next) => {
 
 exports.listApprovedBusinessOwners = async (req, res, next) => {
   try {
-    let opts = buildListOptions({ status: 'APPROVED', ...req.query });
+    // this is new update for group.
+    const { q, limit, offset, groupId } = req.query;
+    let opts = buildListOptions({ status: 'APPROVED', q, limit, offset, groupId });
     opts = await scopeForBranchManager(req, opts);
     const users = await User.findAll(opts);
     res.json(users);

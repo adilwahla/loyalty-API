@@ -11,6 +11,13 @@ const sequelize = new Sequelize(
     dialect: 'mysql',
      dialectOptions: {
     connectTimeout: 30000, // 30 seconds
+      // Fix collation mismatch for string comparisons
+      typeCast: function (field, next) {
+        if (field.type === 'VAR_STRING' || field.type === 'STRING') {
+          return field.string();
+        }
+        return next();
+      }
   },
   pool: {
     max: 10,

@@ -16,7 +16,9 @@ const TaskReassignHistory = sequelize.define(
       references: {
         model: 'tasks',
         key: 'id'
-      }
+      },
+      onDelete: 'CASCADE',
+      onUpdate: 'CASCADE'
     },
     oldUserId: {
       type: DataTypes.UUID,

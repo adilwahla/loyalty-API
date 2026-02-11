@@ -6,6 +6,29 @@ const { emitTaskCreated, emitTaskUpdated, emitTaskCompleted, emitTaskAssigned } 
 exports.getAllTasks = async (req, res) => {
   try {
     const tasks = await taskService.getAllTasks();
+    
+    // this is new update for group.
+    // Debug logging (only in development)
+    if (process.env.NODE_ENV !== 'production') {
+      const tasksWithGroups = tasks.filter(t => t.customer && t.customer.group).length;
+      const tasksWithCustomers = tasks.filter(t => t.customer).length;
+      console.log(`📊 [TaskController] getAllTasks: ${tasks.length} total, ${tasksWithCustomers} with customers, ${tasksWithGroups} with groups`);
+      
+      // Log sample task structure
+      if (tasks.length > 0) {
+        const sampleTask = tasks[0];
+        const hasCustomer = !!sampleTask.customer;
+        const hasGroup = hasCustomer && !!sampleTask.customer.group;
+        console.log(`🔍 [TaskController] Sample task structure:`, {
+          taskId: sampleTask.id,
+          customerId: sampleTask.customerId,
+          hasCustomer,
+          hasGroup,
+          groupName: hasGroup ? sampleTask.customer.group.groupName : null
+        });
+      }
+    }
+    
     res.json(success("Tasks fetched successfully", tasks));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks", err.message));
@@ -27,7 +50,45 @@ exports.getTaskById = async (req, res) => {
 exports.getTaskByUser = async (req, res) => {
   try {
     const tasks = await taskService.getTaskByUser(req.params.id);
-    res.json(success("Tasks fetched successfully", tasks));
+    
+    // this is new update
+    // Debug logging to verify latitude/longitude in response
+    if (process.env.NODE_ENV !== 'production' && tasks && tasks.length > 0) {
+      const sampleTask = tasks[0];
+      if (sampleTask.customer) {
+        console.log(`📍 [TaskController] Sample task customer coordinates:`, {
+          taskId: sampleTask.id,
+          customerId: sampleTask.customerId,
+          customerLatitude: sampleTask.customer.latitude,
+          customerLongitude: sampleTask.customer.longitude,
+          latitudeType: typeof sampleTask.customer.latitude,
+          longitudeType: typeof sampleTask.customer.longitude,
+          hasCoordinates: !!(sampleTask.customer.latitude && sampleTask.customer.longitude),
+          // this is new update
+          // Verify the full customer object structure
+          customerKeys: Object.keys(sampleTask.customer),
+          customerLatInKeys: 'latitude' in sampleTask.customer,
+          customerLngInKeys: 'longitude' in sampleTask.customer
+        });
+      }
+    }
+    
+    // this is new update
+    // Ensure all tasks have properly serialized customer coordinates
+    const serializedTasks = tasks.map(task => {
+      if (task && task.customer) {
+        // Ensure latitude/longitude are explicitly present in the serialized object
+        const serialized = task.toJSON ? task.toJSON() : task;
+        if (serialized.customer) {
+          serialized.customer.latitude = task.customer.latitude || null;
+          serialized.customer.longitude = task.customer.longitude || null;
+        }
+        return serialized;
+      }
+      return task.toJSON ? task.toJSON() : task;
+    });
+    
+    res.json(success("Tasks fetched successfully", serializedTasks));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by user", err.message));
   }

@@ -1,8 +1,151 @@
 const { Op } = require("sequelize");
-const { Task, User, TaskReassignHistory, sequelize } = require("../../models");
+// this is new update for group.
+const { Task, User, TaskReassignHistory, Group, sequelize, Sequelize } = require("../../models");
 
 // Valid task type values
 const VALID_TASK_TYPES = ["Collection", "Promotion", "Up/Cross sell"];
+
+// this is new update for group.
+// Helper: Load customers with groups for tasks (handles collation mismatch)
+async function loadCustomersForTasks(tasks) {
+  if (!tasks || tasks.length === 0) return tasks;
+  
+  const customerIds = [...new Set(tasks.map(t => t.customerId).filter(Boolean))];
+  if (customerIds.length === 0) return tasks;
+
+  // Load all customers - fetch all business owners and match in JavaScript
+  // This avoids collation issues completely
+  const customers = await User.findAll({
+    where: {
+      role: 'BUSINESS_OWNER',
+      bsgCustId: { [Op.not]: null }
+    },
+    attributes: [
+      'id', 'phoneNumber', 'fullName', 'businessName', 'vatNumber',
+      'businessAddress',
+      // this is new update
+      'latitude',
+      // this is new update
+      'longitude',
+      'bsgCustId', 'salesRepId', 'status', 'email',
+      // this is new update for group.
+      'groupId',
+      'createdAt', 'updatedAt'
+    ],
+    include: [{
+      model: Group,
+      as: "group",
+      required: false,
+      attributes: ['groupId', 'groupName', 'groupNameAR', 'colorHex']
+    }]
+  });
+
+  // Create a map for quick lookup (normalize keys to handle any case/collation differences)
+  const customerMap = new Map();
+  customers.forEach(customer => {
+    if (customer.bsgCustId) {
+      // Store with multiple key variations for robust matching
+      const key = String(customer.bsgCustId).trim();
+      customerMap.set(key, customer);
+      customerMap.set(key.toLowerCase(), customer);
+      customerMap.set(key.toUpperCase(), customer);
+      // Store original value as-is
+      customerMap.set(customer.bsgCustId, customer);
+    }
+  });
+
+  // Attach customers to tasks (try multiple lookup strategies)
+  tasks.forEach(task => {
+    if (task.customerId) {
+      const key = String(task.customerId).trim();
+      // Try multiple matching strategies
+      const customer = customerMap.get(key) || 
+                       customerMap.get(key.toLowerCase()) ||
+                       customerMap.get(key.toUpperCase()) ||
+                       customerMap.get(task.customerId);
+      if (customer) {
+        // Convert to plain object to ensure it's included in JSON serialization
+        const taskData = task.toJSON ? task.toJSON() : task;
+        const customerData = customer.toJSON ? customer.toJSON() : customer;
+        
+        // this is new update
+        // Explicitly ensure latitude and longitude are included (handle DECIMAL conversion)
+        // Get raw values from Sequelize instance (handles DECIMAL type properly)
+        const rawLat = customer.get ? customer.get('latitude') : (customer.latitude || customer.dataValues?.latitude);
+        const rawLng = customer.get ? customer.get('longitude') : (customer.longitude || customer.dataValues?.longitude);
+        
+        // Convert to string format (as expected by frontend) or null
+        if (rawLat !== undefined && rawLat !== null && rawLat !== 'null' && rawLat !== '') {
+          customerData.latitude = String(rawLat);
+        } else {
+          customerData.latitude = null;
+        }
+        
+        if (rawLng !== undefined && rawLng !== null && rawLng !== 'null' && rawLng !== '') {
+          customerData.longitude = String(rawLng);
+        } else {
+          customerData.longitude = null;
+        }
+        
+        // Ensure these fields are always present (even if null) for consistent API structure
+        if (!('latitude' in customerData)) {
+          customerData.latitude = null;
+        }
+        if (!('longitude' in customerData)) {
+          customerData.longitude = null;
+        }
+        
+        taskData.customer = customerData;
+        
+        // this is new update for group.
+        // Debug logging (only in development)
+        if (process.env.NODE_ENV !== 'production') {
+          if (customerData.group) {
+            console.log(`✅ [TaskService] Group data attached for task ${task.id}:`, {
+              customerId: task.customerId,
+              groupId: customerData.group.groupId,
+              groupName: customerData.group.groupName,
+              colorHex: customerData.group.colorHex
+            });
+          }
+          // this is new update
+          // Debug latitude/longitude
+          console.log(`📍 [TaskService] Customer coordinates for task ${task.id}:`, {
+            customerId: task.customerId,
+            latitude: customerData.latitude,
+            longitude: customerData.longitude,
+            hasLat: customerData.latitude !== undefined && customerData.latitude !== null,
+            hasLng: customerData.longitude !== undefined && customerData.longitude !== null
+          });
+        }
+        
+        // Update the task instance
+        Object.assign(task, taskData);
+        // Also set dataValues for Sequelize to ensure proper serialization
+        if (task.dataValues) {
+          task.dataValues.customer = customerData;
+          // this is new update
+          // Explicitly ensure latitude/longitude are in dataValues for serialization
+          if (task.dataValues.customer) {
+            task.dataValues.customer.latitude = customerData.latitude;
+            task.dataValues.customer.longitude = customerData.longitude;
+          }
+        }
+        
+        // this is new update
+        // Also set directly on task object for multiple access patterns
+        if (task.customer) {
+          task.customer.latitude = customerData.latitude;
+          task.customer.longitude = customerData.longitude;
+        }
+      } else if (process.env.NODE_ENV !== 'production') {
+        console.log(`⚠️  [TaskService] No customer found for task ${task.id} with customerId: ${task.customerId}`);
+      }
+    }
+  });
+
+  return tasks;
+}
 
 /**
  * Validates taskType string (can be comma-separated)
@@ -33,13 +176,26 @@ function validateTaskType(taskType) {
 
 class TaskService {
   async getAllTasks() {
-    return await Task.findAll({ include: [{ model: User, as: "user" }] });
+    const tasks = await Task.findAll({ 
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
+    });
+    
+    // this is new update for group.
+    return await loadCustomersForTasks(tasks);
   }
 
   async getTaskById(id) {
-    return await Task.findByPk(id, { 
+    const task = await Task.findByPk(id, { 
       include: [
-        { model: User, as: "user" },
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        },
         { 
           model: TaskReassignHistory, 
           as: "reassignHistory",
@@ -51,27 +207,77 @@ class TaskService {
         }
       ]
     });
+    
+    // this is new update for group.
+    if (task) {
+      await loadCustomersForTasks([task]);
+    }
+    
+    return task;
   }
 
   async getTaskByUser(userId) {
-    return await Task.findAll({ where: { userId } });
+    const tasks = await Task.findAll({ 
+      where: { userId },
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
+    });
+    
+    // this is new update for group.
+    return await loadCustomersForTasks(tasks);
   }
 
   async getTasksByCustomer(customerId) {
-    return await Task.findAll({ where: { customerId } });
+    const tasks = await Task.findAll({ 
+      where: { customerId },
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
+    });
+    
+    // this is new update for group.
+    return await loadCustomersForTasks(tasks);
   }
 
   async getTasksByStatus(taskStatus) {
-    return await Task.findAll({ where: { taskStatus } });
+    const tasks = await Task.findAll({ 
+      where: { taskStatus },
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
+    });
+    
+    // this is new update for group.
+    return await loadCustomersForTasks(tasks);
   }
 
   async getTasksByPriority(priority) {
-    return await Task.findAll({ where: { priority } });
+    const tasks = await Task.findAll({ 
+      where: { priority },
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
+    });
+    
+    return await loadCustomersForTasks(tasks);
   }
 
 
   async getTasksByDateRange(startDate, endDate) {
-    return await Task.findAll({
+    const tasks = await Task.findAll({
       where: {
         [Op.or]: [
           {
@@ -82,7 +288,16 @@ class TaskService {
           },
         ],
       },
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
     });
+    
+    // this is new update for group.
+    return await loadCustomersForTasks(tasks);
   }
 
   async createTask(data) {
@@ -97,11 +312,29 @@ class TaskService {
 
     const task = await Task.create(data);
     // Reload with relations for socket events
-    return await Task.findByPk(task.id, { include: [{ model: User, as: "user" }] });
+    const reloadedTask = await Task.findByPk(task.id, { 
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
+    });
+    
+    // this is new update for group.
+    await loadCustomersForTasks([reloadedTask]);
+    return reloadedTask;
   }
 
   async updateTask(id, data) {
-    const task = await Task.findByPk(id, { include: [{ model: User, as: "user" }] });
+    const task = await Task.findByPk(id, { 
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
+    });
     if (!task) return null;
     
     // Store old userId to detect reassignment
@@ -117,7 +350,17 @@ class TaskService {
     }
     await task.update(data);
     // Reload task with relations to get updated data
-    await task.reload({ include: [{ model: User, as: "user" }] });
+    await task.reload({ 
+      include: [
+        { 
+          model: User, 
+          as: "user" // Sales rep
+        }
+      ] 
+    });
+    
+    // this is new update for group.
+    await loadCustomersForTasks([task]);
     
     // Return task with oldUserId for socket events
     task.oldUserId = oldUserId;
@@ -138,7 +381,12 @@ class TaskService {
     try {
       // Fetch current task to get oldUserId
       const task = await Task.findByPk(taskId, { 
-        include: [{ model: User, as: "user" }],
+        include: [
+          { 
+            model: User, 
+            as: "user" // Sales rep
+          }
+        ],
         transaction 
       });
       
@@ -188,7 +436,10 @@ class TaskService {
       // Reload task with relations for response
       await task.reload({ 
         include: [
-          { model: User, as: "user" },
+          { 
+            model: User, 
+            as: "user" // Sales rep
+          },
           { 
             model: TaskReassignHistory, 
             as: "reassignHistory",
@@ -200,6 +451,9 @@ class TaskService {
           }
         ]
       });
+
+      // this is new update for group.
+      await loadCustomersForTasks([task]);
 
       // Return task with oldUserId for socket events
       task.oldUserId = oldUserId;
