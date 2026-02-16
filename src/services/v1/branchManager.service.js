@@ -1,7 +1,16 @@
 // src/services/v1/branchManager.service.js
-const { BranchManager } = require('../../models');
+const { BranchManager, User } = require('../../models');
 
-exports.getAll = () => BranchManager.findAll();
+exports.getAll = () => BranchManager.findAll({
+  include: [{
+    model: User,
+    as: 'manager',
+    attributes: ['fullName'],
+    where: { role: 'BRANCH_MANAGER' },
+    required: false, // LEFT JOIN — return branch even if no matching user
+  }],
+  order: [['created_at', 'DESC']],
+});
 exports.getById = id => BranchManager.findByPk(id);
 exports.create = data => BranchManager.create(data);
 exports.update = (id, updates) => BranchManager.update(updates, { where: { id } });

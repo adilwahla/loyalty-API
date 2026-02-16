@@ -148,7 +148,12 @@ TaskReassignHistory.belongsTo(User, {
   as: "newUser"
 });
 
-
+// BranchManager belongs to User (resolve manager name)
+BranchManager.belongsTo(User, {
+  foreignKey: 'managerId',       // branch_managers.manager_id
+  targetKey: 'branchManagerId',  // users.branch_manager_id
+  as: 'manager',
+});
 
 // Export all models
 module.exports = {

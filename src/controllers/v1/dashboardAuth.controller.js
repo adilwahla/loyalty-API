@@ -5,6 +5,8 @@ const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
 const { User, UserRole } = require('../../models');
 const normalizePhone = require('../../utils/normalizePhone');
+const { sendMobishastraSms: sendSms } = require('../../utils/sendMobishastraSms');
+const { setOtp, verifyOtp, clearOtp } = require('../../utils/otpCache');
 
 // ---- envs ----
 const DEFAULT_USER_PASSWORD = process.env.DEFAULT_USER_PASSWORD || '1234567';
@@ -12,6 +14,7 @@ const BCRYPT_SALT_ROUNDS = parseInt(process.env.BCRYPT_SALT_ROUNDS || '10', 10);
 const JWT_SECRET = process.env.JWT_SECRET || 'CHANGE_ME';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const ADMIN_SETUP_TOKEN = process.env.ADMIN_SETUP_TOKEN || null;
+const ENABLE_OTP = process.env.ENABLE_OTP_VERIFICATION === 'true';
 
 // make a few phone variants so we can find legacy rows
 function phoneVariants(rawPhone) {
@@ -188,7 +191,7 @@ exports.loginUser = async (req, res) => {
   }
 };
 
-// ---------------- UPDATE PASSWORD ----------------
+// ---------------- UPDATE PASSWORD (Admin resets another user's password) ----------------
 exports.updatePassword = async (req, res) => {
   try {
     const { id } = req.params;
@@ -208,5 +211,181 @@ exports.updatePassword = async (req, res) => {
   } catch (err) {
     console.error('Dashboard updatePassword error:', err);
     return res.status(500).json({ message: 'Password update failed', error: err.message });
+  }
+};
+
+// ---------------- CHANGE PASSWORD (Authenticated user changes own password) ----------------
+exports.changePassword = async (req, res) => {
+  try {
+    const userId = req.user.id; // from JWT (authenticate middleware)
+    const { currentPassword, newPassword } = req.body;
+
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'Current password and new password are required' });
+    }
+
+    if (currentPassword === newPassword) {
+      return res.status(400).json({ message: 'New password must be different from current password' });
+    }
+
+    const user = await User.findByPk(userId);
+    if (!user) return res.status(404).json({ message: 'User not found' });
+
+    // Verify the current password
+    const isMatch = await bcrypt.compare(currentPassword, user.password || '');
+    if (!isMatch) {
+      return res.status(403).json({ message: 'Current password is incorrect' });
+    }
+
+    const hashed = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+    await user.update({ password: hashed });
+
+    return res.json({ success: true, message: 'Password changed successfully' });
+  } catch (err) {
+    console.error('Dashboard changePassword error:', err);
+    return res.status(500).json({ message: 'Password change failed', error: err.message });
+  }
+};
+
+// ============================================================
+//  FORGOT PASSWORD FLOW (from Admin Panel login page)
+// ============================================================
+
+// Step 1: Send OTP to admin user's phone number
+exports.forgotPasswordSendOtp = async (req, res) => {
+  try {
+    const { phoneNumber } = req.body;
+    if (!phoneNumber) {
+      return res.status(400).json({ message: 'Phone number is required' });
+    }
+
+    const variants = phoneVariants(phoneNumber);
+    console.log(`[DASHBOARD FORGOT] Phone variants: ${JSON.stringify(variants)}`);
+
+    // Find user with any phone format variant
+    const user = await User.findOne({ where: { phoneNumber: { [Op.in]: variants } } });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Ensure this user has a dashboard-allowed role
+    const allowed = await roleAllowedOnDashboard(user.role);
+    if (!allowed) {
+      return res.status(403).json({ message: 'This account is not authorized for the Admin Panel' });
+    }
+
+    // Generate OTP
+    const otp = ENABLE_OTP
+      ? Math.floor(1000 + Math.random() * 9000).toString()
+      : '1234';
+
+    // Send SMS (use original phone for SMS delivery)
+    const sent = await sendSms(phoneNumber, otp);
+    if (!sent) {
+      return res.status(500).json({ message: 'Failed to send OTP' });
+    }
+
+    // Store OTP with normalized phone
+    const normalizedPhone = normalizePhone(phoneNumber);
+    setOtp(normalizedPhone, otp);
+    const expiresAt = Date.now() + 5 * 60 * 1000; // 5 minutes
+
+    console.log(`[DASHBOARD FORGOT] OTP sent to ${phoneNumber} (normalized: ${normalizedPhone}): ${otp}`);
+
+    return res.json({
+      success: true,
+      message: 'OTP sent',
+      expiresAt,
+      ...(ENABLE_OTP ? {} : { otp }) // expose OTP only when OTP verification is disabled (dev mode)
+    });
+  } catch (err) {
+    console.error('Dashboard forgotPasswordSendOtp error:', err);
+    return res.status(500).json({ message: 'Failed to send OTP', error: err.message });
+  }
+};
+
+// Step 2: Verify OTP
+exports.forgotPasswordVerifyOtp = async (req, res) => {
+  try {
+    const { phoneNumber, otpCode } = req.body;
+    if (!phoneNumber || !otpCode) {
+      return res.status(400).json({ message: 'Phone number and OTP code are required' });
+    }
+
+    const normalizedPhone = normalizePhone(phoneNumber);
+    console.log(`[DASHBOARD FORGOT VERIFY] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+
+    // Verify OTP from cache
+    const isValid = verifyOtp(normalizedPhone, otpCode);
+    if (!isValid) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
+
+    // Find the user using phone variants (handles legacy formats)
+    const variants = phoneVariants(phoneNumber);
+    const user = await User.findOne({ where: { phoneNumber: { [Op.in]: variants } } });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Mark OTP as verified on the user record
+    await user.update({ isOtpVerified: true });
+
+    // Clear OTP from cache after successful verification
+    clearOtp(normalizedPhone);
+
+    console.log(`[DASHBOARD FORGOT VERIFY] OTP verified for ${normalizedPhone}`);
+
+    return res.json({
+      success: true,
+      message: 'OTP verified',
+      userId: user.id
+    });
+  } catch (err) {
+    console.error('Dashboard forgotPasswordVerifyOtp error:', err);
+    return res.status(500).json({ message: 'OTP verification failed', error: err.message });
+  }
+};
+
+// Step 3: Reset password (after OTP verified)
+exports.forgotPasswordResetPassword = async (req, res) => {
+  try {
+    const { phoneNumber, newPassword } = req.body;
+
+    if (!phoneNumber) {
+      return res.status(400).json({ message: 'Phone number is required' });
+    }
+    if (!newPassword) {
+      return res.status(400).json({ message: 'New password is required' });
+    }
+
+    // Find user using phone variants
+    const variants = phoneVariants(phoneNumber);
+    const user = await User.findOne({ where: { phoneNumber: { [Op.in]: variants } } });
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Ensure this user has a dashboard-allowed role
+    const allowed = await roleAllowedOnDashboard(user.role);
+    if (!allowed) {
+      return res.status(403).json({ message: 'This account is not authorized for the Admin Panel' });
+    }
+
+    // Security check: OTP must have been verified first
+    if (!user.isOtpVerified) {
+      return res.status(400).json({ message: 'Please verify OTP first' });
+    }
+
+    // Hash and update password
+    const hashed = await bcrypt.hash(newPassword, BCRYPT_SALT_ROUNDS);
+    await user.update({ password: hashed });
+
+    console.log(`[DASHBOARD FORGOT RESET] Password reset successfully for user ${user.id}`);
+
+    return res.json({ success: true, message: 'Password reset successfully' });
+  } catch (err) {
+    console.error('Dashboard forgotPasswordResetPassword error:', err);
+    return res.status(500).json({ message: 'Password reset failed', error: err.message });
   }
 };

@@ -308,16 +308,9 @@ function buildListOptions({ status, q, limit, offset, groupId } = {}) {
   const opts = {
     where,
     attributes: [
-      'id','phoneNumber','fullName','businessName','vatNumber',
-      'businessAddress',
-      // this is new update
-      'latitude',
-      // this is new update
-      'longitude',
-      'bsgCustId','salesRepId','status','email',
-      // this is new update for group.
-      'groupId',
-      'createdAt','updatedAt'
+      'id','phoneNumber','fullName','businessName','vatNumber','businessAddress',
+      // this is new update + new update for group.
+      'latitude','longitude','bsgCustId','salesRepId','status','email','groupId','createdAt','updatedAt'
     ],
     // this is new update for group.
     include: [{
