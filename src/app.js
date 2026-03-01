@@ -39,6 +39,9 @@ app.use((err, req, res, next) => {
 // ✅ Health check ping
 app.use('/api/v1/ping', require('./routes/api/v1/ping.routes'));
 
+// App version (Force Update) — no auth, used by Splash before login
+app.use('/api/v1', require('./routes/api/v1/appVersion.routes'));
+
 // ✅ Admin Routes
 app.use('/api/v1/admin/products', require('./routes/api/v1/admin/product.routes'));
 app.use('/api/v1/admin/rewards', require('./routes/api/v1/admin/reward.routes')); // ✅ Added Reward Routes
@@ -66,6 +69,9 @@ app.use('/api/v1/admin/groups', require('./routes/api/v1/admin/group.routes'));
 
 app.use('/api/v1/auth', require('./routes/api/v1/auth.routes'));
 
+// Multi-account endpoints for Business Owners (GET/POST /api/v1/users/me/accounts)
+app.use('/api/v1/users', require('./routes/api/v1/account.routes'));
+
 // ✅ Dashboard Auth Routes 
 
 
@@ -82,6 +88,15 @@ app.use('/api/v1/admin/redemption-requests', require('./routes/api/v1/admin/rede
      
 // ✅ Mobile Redemption Request Routes (Business Owner)
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/warrantyRedemption.routes'));
+
+// Mobile groups endpoint (BO dropdown for multi-account)
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/group.routes'));
+
+// Mobile app-version endpoint (ForceUpdateChecker)
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/appVersion.routes'));
+
+// Mobile sales-reps endpoint (BO registration dropdown)
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/salesRep.routes'));
 
 app.use('/api/v1/admin/sales-reps', require('./routes/api/v1/admin/salesRep.routes'));
 app.use('/api/v1/admin/branch-managers', require('./routes/api/v1/admin/branchManager.routes'));
@@ -133,7 +148,7 @@ app.get('/mem', (req, res) => {
 const taskRoutes = require("./routes/api/v1/taskRoutes");
 app.use("/api/v1/tasks", taskRoutes);
 
-// Sync DB and start server (simple, reliable path now that migrations are done)
+// Sync DB and start server
 sequelize.sync()
   .then(() => {
     console.log('✅ Database synced');
@@ -141,7 +156,7 @@ sequelize.sync()
   })
   .catch((err) => {
     console.error('❌ Failed to sync database:', err);
-    startServer(); // Start server anyway
+    startServer();
   });
 
 function startServer() {

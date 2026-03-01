@@ -1,5 +1,6 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { Op } = require('sequelize');
 const { success, error } = require('../../utils/response');
 
 // const User = require('../../models/user.model');
@@ -8,6 +9,7 @@ const db = require('../../models'); // ✅ central model loader
 
 const User = db.User;
 const UserRole = db.UserRole;
+const Group = db.Group;
 // const sendSms = require('../../utils/sendMobishastraSms');
 const { sendMobishastraSms: sendSms } = require('../../utils/sendMobishastraSms');
 // ELHAM: Import normalizePhone utility to normalize phone numbers before database queries
@@ -113,7 +115,8 @@ exports.registerUser = async (req, res) => {
     vatNumber, businessAddress,
     // this is new update
     latitude, longitude,
-    bsgCustId, salesRepId, deviceToken, email
+    bsgCustId, salesRepId, deviceToken, email,
+    groupId
   } = req.body;
 
   try {
@@ -132,13 +135,17 @@ exports.registerUser = async (req, res) => {
     }
 
     // 2. Prevent duplicate registration
-    // ELHAM: Check for existing user with normalized phone number
+    // For BUSINESS_OWNER: allow duplicate phone numbers (multi-account feature).
+    // For all other roles: keep strict phone uniqueness.
+    const normalizedRole = role.toUpperCase();
     const existing = await User.findOne({ where: { phoneNumber: normalizedPhone } });
     if (existing) {
-      return res.status(409).json({ message: 'User already registered' });
+      if (normalizedRole !== 'BUSINESS_OWNER' || existing.role !== 'BUSINESS_OWNER') {
+        return res.status(409).json({ message: 'User already registered' });
+      }
+      // BO registering with a phone that already has a BO row — allowed
     }
     // 3) Create user (OTP was verified earlier)
-    const normalizedRole = role.toUpperCase();
     const status = normalizedRole === 'BUSINESS_OWNER' ? 'PENDING' : '-';
     // 3. Create the user — OTP was already verified in previous step
     // ELHAM: Store normalized phone number in database for consistency
@@ -160,6 +167,7 @@ exports.registerUser = async (req, res) => {
       status,
       email,            // 👈 new
       deviceToken: deviceToken || null, // 👈 new (optional)
+      groupId: groupId ? parseInt(groupId, 10) : null,
     });
 
     const io = req.app.get('io');
@@ -203,8 +211,22 @@ exports.loginUser = async (req, res) => {
   const normalizedPhone = normalizePhone(phoneNumber);
   console.log(`[LOGIN] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
 
-  // ELHAM: Query user with normalized phone number for consistent database lookup
-  const user = await User.findOne({ where: { phoneNumber: normalizedPhone } });
+  // Query user with normalized phone number; only match rows that have a password.
+  // BO accounts added from the app have NULL password, so this always finds the
+  // primary (login-capable) row and skips additional account-only rows.
+  // Include Group so the login response contains groupName/groupNameAR/colorHex.
+  const user = await User.findOne({
+    where: {
+      phoneNumber: normalizedPhone,
+      password: { [Op.ne]: null },
+    },
+    include: [{
+      model: Group,
+      as: 'group',
+      required: false,
+      attributes: ['groupId', 'groupName', 'groupNameAR', 'colorHex'],
+    }],
+  });
 
   if (!user) {
     return res.status(403).json({
@@ -213,12 +235,6 @@ exports.loginUser = async (req, res) => {
     });
   }
 
-  // if (!user.isOtpVerified) {
-  //   return res.status(401).json({
-  //     success: false,
-  //     message: 'Please verify your phone number first'
-  //   });
-  // }
   const otpRequiredRoles = ['CUSTOMER', 'TECHNICIAN', 'BUSINESS_OWNER'];
 
   if (otpRequiredRoles.includes(user.role.toUpperCase()) && !user.isOtpVerified) {
@@ -294,8 +310,10 @@ exports.forgotPasswordSendOtp = async (req, res) => {
   const normalizedPhone = normalizePhone(phoneNumber);
   console.log(`[FORGOT] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
 
-  // ELHAM: Query user with normalized phone number to match database storage format
-  const user = await User.findOne({ where: { phoneNumber: normalizedPhone } });
+  // Find the primary (login-capable) user row — the one with a password.
+  const user = await User.findOne({
+    where: { phoneNumber: normalizedPhone, password: { [Op.ne]: null } },
+  });
   if (!user) return res.status(404).json({ message: 'User not found' });
 
   const otp = process.env.NODE_ENV === 'development'
@@ -361,13 +379,15 @@ exports.forgotPasswordResetPassword = async (req, res) => {
   const normalizedPhone = normalizePhone(phoneNumber);
   console.log(`[FORGOT RESET] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
 
-  // ELHAM: Find user with normalized phone number for consistent database lookup
-  const user = await User.findOne({ where: { phoneNumber: normalizedPhone } });
+  // Find the primary (login-capable) user row — the one with a password.
+  const user = await User.findOne({
+    where: { phoneNumber: normalizedPhone, password: { [Op.ne]: null } },
+  });
   if (!user) {
     return res.status(404).json({ message: 'User not found' });
   }
 
-  // ELHAM: Verify OTP was verified before allowing password reset (security check)
+  // Verify OTP was verified before allowing password reset (security check)
   if (!user.isOtpVerified) {
     return res.status(400).json({ message: 'Please verify OTP first' });
   }

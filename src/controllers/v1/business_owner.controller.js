@@ -121,11 +121,42 @@ exports.createBusinessOwner = async (req, res, next) => {
     } = req.body;
 
     phoneNumber = normalizePhone(phoneNumber);
-    const existing = await User.findOne({ where: { phoneNumber } });
-    if (existing) return res.status(409).json({ message: 'User already registered' });
 
-    const defaultPassword = process.env.DEFAULT_USER_PASSWORD || '1234567';
-    const hashed = await bcrypt.hash(defaultPassword, parseInt(process.env.BCRYPT_SALT_ROUNDS) || 10);
+    // Allow duplicate phone numbers for BUSINESS_OWNER role.
+    // Only reject if the exact same (phone + bsgCustId + groupId) combo exists.
+    const parsedGroupId = groupId ? parseInt(groupId, 10) : null;
+    const existingExact = await User.findOne({
+      where: {
+        phoneNumber,
+        role: 'BUSINESS_OWNER',
+        bsgCustId: bsgCustId || null,
+        groupId: parsedGroupId,
+      },
+    });
+    if (existingExact) {
+      return res.status(409).json({ message: 'Business Owner with this phone, customer ID and group already exists' });
+    }
+
+    // Block if the phone is taken by a non-BO role (keep uniqueness for other roles)
+    const existingNonBo = await User.findOne({
+      where: { phoneNumber, role: { [Op.ne]: 'BUSINESS_OWNER' } },
+    });
+    if (existingNonBo) {
+      return res.status(409).json({ message: 'Phone number already in use by another role' });
+    }
+
+    // Check if this phone already has a primary BO row (with password).
+    // If so, the new row is an additional account (no password).
+    const existingPrimary = await User.findOne({
+      where: { phoneNumber, role: 'BUSINESS_OWNER', password: { [Op.ne]: null } },
+    });
+
+    let hashed = null;
+    if (!existingPrimary) {
+      // First BO row for this phone — set a password (this is the primary/login row)
+      const defaultPassword = process.env.DEFAULT_USER_PASSWORD || '1234567';
+      hashed = await bcrypt.hash(defaultPassword, parseInt(process.env.BCRYPT_SALT_ROUNDS) || 10);
+    }
 
     const user = await User.create({
       phoneNumber,
@@ -134,15 +165,12 @@ exports.createBusinessOwner = async (req, res, next) => {
       businessName: businessName || null,
       vatNumber: vatNumber || null,
       businessAddress: businessAddress || null,
-      // this is new update
       latitude: latitude ? parseFloat(latitude) : null,
-      // this is new update
       longitude: longitude ? parseFloat(longitude) : null,
       bsgCustId: bsgCustId || null,
       salesRepId: salesRepId || null,
       email: email || null,
-      // this is new update for group.
-      groupId: groupId ? parseInt(groupId, 10) : null,
+      groupId: parsedGroupId,
       password: hashed,
       isOtpVerified: true,
       status: (status ? String(status).toUpperCase() : 'APPROVED'),
