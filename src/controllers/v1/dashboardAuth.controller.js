@@ -3,7 +3,7 @@
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { Op } = require('sequelize');
-const { User, UserRole } = require('../../models');
+const { User, UserRole , Role, Duty, Privilege } = require('../../models');
 const normalizePhone = require('../../utils/normalizePhone');
 
 // ---- envs ----
@@ -163,6 +163,61 @@ exports.loginUser = async (req, res) => {
     if (!isMatch) {
       return res.status(403).json({ message: 'Invalid credentials' });
     }
+if (user.role === 'SUPER_ADMIN') {
+  const token = jwt.sign(
+    { id: user.id, role: user.role },
+    JWT_SECRET,
+    { expiresIn: JWT_EXPIRES_IN }
+  );
+
+  return res.status(200).json({
+    success: true,
+    message: 'Login successful',
+    token,
+    permissions: ['*'], // full access
+    user: {
+      id: user.id,
+      phoneNumber: user.phoneNumber,
+      role: user.role,
+      fullName: user.fullName,
+      email: user.email
+    }
+  });
+}
+ // 🔥 RBAC FETCH
+const userWithRoles = await User.findByPk(user.id, {
+  include: {
+    model: Role,
+    as: 'userRole',
+    include: {
+      model: Duty,
+      as: 'roleDuties',
+      include: {
+        model: Privilege,
+        as: 'dutyPrivileges'
+      }
+    }
+  }
+});
+
+const permissions = [];
+
+if (userWithRoles?.userRole?.roleDuties) {
+  userWithRoles.userRole.roleDuties.forEach(duty => {
+    duty.dutyPrivileges?.forEach(priv => {
+      permissions.push(priv.controlName);
+    });
+  });
+}
+
+const permissionList = Array.from(new Set(permissions)); // remove duplicates
+
+console.log("🧩 RBAC Debug =======================");
+console.log("User ID:", user.id);
+console.log("User Role (string column):", user.role);
+console.log("RBAC Role Attached:", userWithRoles?.userRole?.name);
+console.log("Permissions Extracted:", permissionList);
+console.log("=====================================");
 
     const token = jwt.sign(
       { id: user.id, role: user.role },
@@ -174,6 +229,7 @@ exports.loginUser = async (req, res) => {
       success: true,
       message: 'Login successful',
       token,
+       permissions: permissionList,
       user: {
         id: user.id,
         phoneNumber: user.phoneNumber,

@@ -291,49 +291,129 @@ function buildListOptions({ status, q, limit, offset } = {}) {
 
 // 🔒 Narrow scope for Branch Manager
 // 🔒 Scope BOs for the logged-in Branch Manager
-async function scopeForBranchManager(req, opts) {
-  if (req.user.role !== 'BRANCH_MANAGER') return opts;
+// async function scopeForBranchManager(req, opts) {
+//   if (req.user.role !== 'BRANCH_MANAGER') return opts;
 
-  // 1️⃣ Get manager code from the Branch Manager's own record
-  let managerKey = (req.user.branchManagerId || '').trim();
-  if (!managerKey) {
+//   // 1️⃣ Get manager code from BRANCH_MANAGER row
+//   const me = await User.findByPk(req.user.id, {
+//     attributes: ['branchManagerId'],
+//     raw: true,
+//   });
+
+//   const managerCode = (me?.branchManagerId || '').trim();
+
+//   if (!managerCode) {
+//     opts.where.salesRepId = { [Op.in]: ['__none__'] };
+//     return opts;
+//   }
+
+//   // 2️⃣ Find Sales Reps under this manager code
+//   const reps = await User.findAll({
+//     where: {
+//       role: 'SALES_REP',
+//       branchManagerId: managerCode, // 🔥 match by CODE
+//     },
+//     attributes: ['salesRepId'],
+//     raw: true,
+//   });
+
+//   const repCodes = reps
+//     .map(r => (r.salesRepId || '').trim())
+//     .filter(Boolean);
+
+//   if (!repCodes.length) {
+//     opts.where.salesRepId = { [Op.in]: ['__none__'] };
+//     return opts;
+//   }
+
+//   // 3️⃣ Filter BOs
+//   opts.where = {
+//     ...opts.where,
+//     salesRepId: { [Op.in]: repCodes }
+//   };
+
+//   console.log(`👔 BM(${managerCode}) sees reps:`, repCodes);
+
+//   return opts;
+// }
+async function scopeBusinessOwners(req, opts) {
+  const role = req.user.role;
+
+  // -------------------------
+  // 🔹 BRANCH MANAGER
+  // -------------------------
+  if (role === 'BRANCH_MANAGER') {
+
     const me = await User.findByPk(req.user.id, {
       attributes: ['branchManagerId'],
       raw: true,
     });
-    managerKey = (me?.branchManagerId || '').trim();
-  }
 
-  if (!managerKey) {
-    // no manager code → show nothing
-    opts.where.salesRepId = { [Op.in]: ['__none__'] };
+    const managerCode = (me?.branchManagerId || '').trim();
+
+    if (!managerCode) {
+      opts.where.salesRepId = { [Op.in]: ['__none__'] };
+      return opts;
+    }
+
+    const reps = await User.findAll({
+      where: {
+        role: 'SALES_REP',
+        branchManagerId: managerCode,
+      },
+      attributes: ['salesRepId'],
+      raw: true,
+    });
+
+    const repCodes = reps
+      .map(r => (r.salesRepId || '').trim())
+      .filter(Boolean);
+
+    if (!repCodes.length) {
+      opts.where.salesRepId = { [Op.in]: ['__none__'] };
+      return opts;
+    }
+
+    opts.where = {
+      ...opts.where,
+      salesRepId: { [Op.in]: repCodes }
+    };
+
+    console.log(`👔 BM(${managerCode}) sees reps:`, repCodes);
     return opts;
   }
 
-  // 2️⃣ Find all Sales Reps under this Branch Manager
-  const reps = await User.findAll({
-    where: {
-      role: 'SALES_REP',
-      branchManagerId: managerKey,  // match by manager code
-    },
-    attributes: ['salesRepId'],
-    raw: true,
-  });
+  // -------------------------
+  // 🔹 SALES REP
+  // -------------------------
+  if (role === 'SALES_REP') {
 
-  const repCodes = reps.map(r => (r.salesRepId || '').trim()).filter(Boolean);
+    const me = await User.findByPk(req.user.id, {
+      attributes: ['salesRepId'],
+      raw: true,
+    });
 
-  // 3️⃣ Restrict Business Owners to those reps
-  if (!repCodes.length) {
-    opts.where.salesRepId = { [Op.in]: ['__none__'] };
+    const mySalesRepCode = (me?.salesRepId || '').trim();
+
+    if (!mySalesRepCode) {
+      opts.where.salesRepId = { [Op.in]: ['__none__'] };
+      return opts;
+    }
+
+    opts.where = {
+      ...opts.where,
+      salesRepId: mySalesRepCode
+    };
+
+    console.log(`🧑‍💼 SALES_REP(${mySalesRepCode}) scoped`);
     return opts;
   }
 
-  opts.where.salesRepId = { [Op.in]: repCodes };
-
-  console.log(`👔 BranchManager(${managerKey}) sees reps:`, repCodes);
+  // -------------------------
+  // 🔹 ALL OTHER ROLES
+  // -------------------------
   return opts;
 }
-
 
 exports.listBusinessOwners = async (req, res, next) => {
   try {
@@ -348,8 +428,10 @@ exports.listBusinessOwners = async (req, res, next) => {
 exports.listPendingBusinessOwners = async (req, res, next) => {
   try {
     let opts = buildListOptions({ status: 'PENDING', ...req.query });
-    opts = await scopeForBranchManager(req, opts);
+  //  opts = await scopeForBranchManager(req, opts);
+   opts = await scopeBusinessOwners(req, opts);
     const users = await User.findAll(opts);
+    console.log("Logged user:", req.user);
     res.json(users);
   } catch (e) { next(e); }
 };
@@ -357,7 +439,8 @@ exports.listPendingBusinessOwners = async (req, res, next) => {
 exports.listApprovedBusinessOwners = async (req, res, next) => {
   try {
     let opts = buildListOptions({ status: 'APPROVED', ...req.query });
-    opts = await scopeForBranchManager(req, opts);
+   // opts = await scopeForBranchManager(req, opts);
+    opts = await scopeBusinessOwners(req, opts);
     const users = await User.findAll(opts);
     res.json(users);
   } catch (e) { next(e); }

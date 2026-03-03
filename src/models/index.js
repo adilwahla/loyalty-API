@@ -16,13 +16,28 @@ const Task = require("./task");
 const TaskReassignHistory = require("./taskReassignHistory.model");
 
 
-const WarrantyScan  = require('./WarrantyScan.model')(sequelize, DataTypes);
+
+
+
+const WarrantyScan = require('./WarrantyScan.model')(sequelize, DataTypes);
 const PointsTransaction = require('./PointsTransaction.model')(sequelize, DataTypes);
 const PointsRule = require('./PointsRule.model')(sequelize, DataTypes);
 const BrandMaster = require('./brandMaster')(sequelize, DataTypes);
 const TechnicianBusinessOwnerLink = require('./TechnicianBusinessOwnerLink')(sequelize, DataTypes);
 const UsedQrNonce = require('./UsedQrNonce')(sequelize, DataTypes);
 
+
+// Privilege Models
+const RoleModel = require('./privilege/role.model');
+const DutyModel = require('./privilege/duty.model');
+const PrivilegeModel = require('./privilege/privileges.model');
+const RoleDutyModel = require('./privilege/roleDuty.model');
+const DutyPrivilegeModel = require('./privilege/dutyPrivilege.model');
+
+
+
+
+/** -------------------------------------------------------- */
 
 // Initialize Models
 const Product = ProductModel(sequelize, DataTypes);
@@ -33,7 +48,14 @@ const RedemptionRequest = RedemptionRequestModel(sequelize, DataTypes);
 const WarrantyRedemption = WarrantyRedemptionModel(sequelize, DataTypes);
 const SalesRep = SalesRepModel(sequelize, DataTypes);
 const BranchManager = BranchManagerModel(sequelize, DataTypes);
+// const Role = RoleModel(sequelize, DataTypes);
+// const Duty = DutyModel(sequelize, DataTypes);
 
+const Role = RoleModel(sequelize, DataTypes);
+const Duty = DutyModel(sequelize, DataTypes);
+const Privilege = PrivilegeModel(sequelize, DataTypes);
+const RoleDuty = RoleDutyModel(sequelize, DataTypes);
+const DutyPrivilege = DutyPrivilegeModel(sequelize, DataTypes);
 
 
 
@@ -73,19 +95,48 @@ User.hasMany(WarrantyRedemption, {
 
 
 
-// // ✅ User has one role
-// User.belongsTo(UserRole, {
-//   foreignKey: 'role',   // column in User table
-//   targetKey: 'roleName', // column in UserRole table
-//   as: 'userRole',        // alias to use in include
-// });
+// // ✅ privilege associations
+/// Role ↔ Duty
+Role.belongsToMany(Duty, {
+  through: RoleDuty,
+  foreignKey: 'roleId',
+  otherKey: 'dutyId',
+  as: 'roleDuties'
+});
 
-// // Optional: Role has many users
-// UserRole.hasMany(User, {
-//   foreignKey: 'role',
-//   sourceKey: 'roleName',
-//   as: 'users',
-// });
+Duty.belongsToMany(Role, {
+  through: RoleDuty,
+  foreignKey: 'dutyId',
+  otherKey: 'roleId',
+  as: 'dutyRoles'
+});
+
+// Duty ↔ Privilege
+Duty.belongsToMany(Privilege, {
+  through: DutyPrivilege,
+  foreignKey: 'dutyId',
+  otherKey: 'privilegeId',
+  as: 'dutyPrivileges'
+});
+
+Privilege.belongsToMany(Duty, {
+  through: DutyPrivilege,
+  foreignKey: 'privilegeId',
+  otherKey: 'dutyId',
+  as: 'privilegeDuties'
+});
+
+User.belongsTo(Role, {
+  foreignKey: 'role',     // column in users table
+  targetKey: 'name',      // column in roles table
+  as: 'userRole'
+});
+
+Role.hasMany(User, {
+  foreignKey: 'role',
+  sourceKey: 'name',
+  as: 'roleUsers'
+});
 
 
 //ELHAM----------------
@@ -120,6 +171,24 @@ TaskReassignHistory.belongsTo(User, {
   as: "newUser"
 });
 
+// Object.keys(db).forEach(modelName => {
+//   if (db[modelName].associate) {
+//     db[modelName].associate(db);
+//   }
+// });
+// Role.belongsToMany(Duty, {
+//   through: RoleDuty,
+//   foreignKey: 'roleId',
+//   otherKey: 'dutyId',
+//   as: 'duties'
+// });
+
+// Duty.belongsToMany(Privilege, {
+//   through: DutyPrivilege,
+//   foreignKey: 'dutyId',
+//   otherKey: 'privilegeId',
+//   as: 'privileges'
+// });
 
 
 // Export all models
@@ -144,5 +213,13 @@ module.exports = {
   TechnicianBusinessOwnerLink,
   UsedQrNonce,
   Task,
-  TaskReassignHistory
+  TaskReassignHistory,
+  // RBAC
+  Role,
+  Duty,
+  Privilege,
+  RoleDuty,
+  DutyPrivilege,
+
+
 };

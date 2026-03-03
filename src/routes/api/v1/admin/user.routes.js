@@ -8,16 +8,16 @@ const { authenticate, restrictToRoles } = require('../../../../middleware/auth')
 // router.put('/:userId/reject',  authenticate, restrictToRoles('SALES_ADMIN','ADMIN'), controller.rejectBusinessOwner);
 
 // -------- Business Owner–specific endpoints (PUT/POST/GET) --------
-router.get('/business-owners',   authenticate, restrictToRoles('SUPER_ADMIN','ADMIN','BRANCH_MANAGER'), boController.listBusinessOwners);               // ?status=&q=&limit=&offset=
-router.get('/business-owners/pending', authenticate, restrictToRoles('SUPER_ADMIN','ADMIN','BRANCH_MANAGER'), boController.listPendingBusinessOwners);
-router.get('/business-owners/approved',authenticate, restrictToRoles('SUPER_ADMIN','ADMIN','BRANCH_MANAGER'), boController.listApprovedBusinessOwners);
+router.get('/business-owners',   authenticate, restrictToRoles('SUPER_ADMIN', 'ADMIN', 'SALES_REP', 'SALES_ADMIN' , 'BRANCH_MANAGER'), boController.listBusinessOwners);               // ?status=&q=&limit=&offset=
+router.get('/business-owners/pending', authenticate, restrictToRoles('SUPER_ADMIN', 'ADMIN', 'SALES_REP', 'SALES_ADMIN' , 'BRANCH_MANAGER'), boController.listPendingBusinessOwners);
+router.get('/business-owners/approved',authenticate, restrictToRoles('SUPER_ADMIN', 'ADMIN', 'SALES_REP', 'SALES_ADMIN' , 'BRANCH_MANAGER'), boController.listApprovedBusinessOwners);
 
-router.put('/business-owners/:userId/approve',authenticate,restrictToRoles('SUPER_ADMIN','ADMIN','BRANCH_MANAGER'), boController.approveBusinessOwner);
-router.put('/business-owners/:userId/reject',authenticate, restrictToRoles('SUPER_ADMIN','ADMIN','BRANCH_MANAGER'), boController.rejectBusinessOwner);
+router.put('/business-owners/:userId/approve',authenticate,restrictToRoles('SUPER_ADMIN', 'ADMIN', 'SALES_REP', 'SALES_ADMIN' , 'BRANCH_MANAGER'), boController.approveBusinessOwner);
+router.put('/business-owners/:userId/reject',authenticate, restrictToRoles('SUPER_ADMIN', 'ADMIN', 'SALES_REP', 'SALES_ADMIN' , 'BRANCH_MANAGER'), boController.rejectBusinessOwner);
 
-router.post('/business-owners',authenticate,restrictToRoles('SUPER_ADMIN','ADMIN','BRANCH_MANAGER'), boController.createBusinessOwner);             // admin creates BO
-router.put('/business-owners/:userId',authenticate,restrictToRoles('SUPER_ADMIN','ADMIN','BRANCH_MANAGER'), boController.updateBusinessOwner);
-
+router.post('/business-owners',authenticate,restrictToRoles('SUPER_ADMIN', 'ADMIN', 'SALES_REP', 'SALES_ADMIN' , 'BRANCH_MANAGER'), boController.createBusinessOwner);             // admin creates BO
+router.put('/business-owners/:userId',authenticate,restrictToRoles('SUPER_ADMIN', 'ADMIN', 'SALES_REP', 'SALES_ADMIN' , 'BRANCH_MANAGER'), boController.updateBusinessOwner);
+//'SUPER_ADMIN', 'ADMIN', 'SALES_REP', 'SALES_ADMIN' , 'BRANCH_MANAGER'
 // router.put('/:userId/approve',  bo_controller.approveBusinessOwner);
 // router.put('/:userId/reject',  bo_controller.rejectBusinessOwner);
 // router.post('/', bo_controller.createBusinessOwner);

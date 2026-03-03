@@ -129,6 +129,10 @@ app.get('/mem', (req, res) => {
 const taskRoutes = require("./routes/api/v1/taskRoutes");
 app.use("/api/v1/tasks", taskRoutes);
 
+// ✅ RBAC Routes (Roles, Duties, Privileges)
+app.use('/api/v1/admin/rbac', require('./routes/api/v1/admin/rbac.routes'));
+
+
 // Sync DB and start server (simple, reliable path now that migrations are done)
 sequelize.sync()
   .then(() => {
