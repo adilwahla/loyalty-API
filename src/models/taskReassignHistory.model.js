@@ -1,6 +1,6 @@
 const { DataTypes } = require("sequelize");
 const sequelize = require("../../config/database");
-
+ 
 const TaskReassignHistory = sequelize.define(
   "TaskReassignHistory",
   {
@@ -16,7 +16,9 @@ const TaskReassignHistory = sequelize.define(
       references: {
         model: 'tasks',
         key: 'id'
-      }
+      },
+      onDelete: 'CASCADE', // ← مضافة من النسخة الأولى
+      onUpdate: 'CASCADE'  // ← مضافة من النسخة الأولى
     },
     oldUserId: {
       type: DataTypes.UUID,
@@ -57,6 +59,5 @@ const TaskReassignHistory = sequelize.define(
     timestamps: false
   }
 );
-
+ 
 module.exports = TaskReassignHistory;
-

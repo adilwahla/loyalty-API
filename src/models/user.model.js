@@ -8,7 +8,7 @@ module.exports = (sequelize, DataTypes) => {
     phoneNumber: {
       type: DataTypes.STRING,
       allowNull: false,
-      unique: true,
+      unique: false,
       field: 'phone_number',
     },
     password: {
@@ -44,6 +44,18 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       field: 'business_address',
     },
+
+    latitude: {
+       type: DataTypes.DECIMAL(10, 8),
+        allowNull: true,
+         field: 'latitude' 
+        },
+
+    longitude: { 
+      type: DataTypes.DECIMAL(11, 8),
+       allowNull: true,
+        field: 'longitude' },
+
     binShihonWorkerId: {
       type: DataTypes.STRING,
       allowNull: true,
@@ -83,7 +95,7 @@ module.exports = (sequelize, DataTypes) => {
       field: 'points',
     },
 
-        // 🔹 New field
+    // 🔹 New field
     shareFactor: {
       type: DataTypes.FLOAT,
       allowNull: false,
@@ -102,7 +114,11 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       field: 'device_token',
     },
-
+groupId: { 
+  type: DataTypes.INTEGER,
+   allowNull: true,
+    field: 'groupId' 
+  }
   }, {
     tableName: 'users',
     timestamps: true,

@@ -39,13 +39,16 @@ app.use((err, req, res, next) => {
 // ✅ Health check ping
 app.use('/api/v1/ping', require('./routes/api/v1/ping.routes'));
 
+// App version (Force Update) — no auth, used by Splash before login
+app.use('/api/v1', require('./routes/api/v1/appVersion.routes.js'));
+
 // ✅ Admin Routes
 app.use('/api/v1/admin/products', require('./routes/api/v1/admin/product.routes'));
 app.use('/api/v1/admin/rewards', require('./routes/api/v1/admin/reward.routes')); // ✅ Added Reward Routes
 
 // ✅ File Upload API (used for direct uploads if needed)
 app.use('/api/v1/upload', require('./routes/api/v1/upload.routes'));
-app.use('/api/v1/upload', require('./routes/api/v1/upload.routes'));
+//app.use('/api/v1/upload', require('./routes/api/v1/upload.routes'));
 
 
 // ✅ Offer Routes
@@ -60,7 +63,14 @@ app.use('/api/v1/admin/user-roles', require('./routes/api/v1/admin/userRole.rout
 app.use('/api/v1/admin/users', require('./routes/api/v1/admin/user.routes'));
 
 
+// this is new update for group.
+// ✅ Groups Routes (for filtering business owners by group)
+app.use('/api/v1/admin/groups', require('./routes/api/v1/admin/group.routes'));
+
 app.use('/api/v1/auth', require('./routes/api/v1/auth.routes'));
+
+// Multi-account endpoints for Business Owners (GET/POST /api/v1/users/me/accounts)
+app.use('/api/v1/users', require('./routes/api/v1/account.routes'));
 
 // ✅ Dashboard Auth Routes 
 
@@ -75,9 +85,18 @@ app.use('/api/v1/dashboard/auth', require('./routes/api/v1/dashboard/auth.routes
 
 // ✅ Redemption Request Routes
 app.use('/api/v1/admin/redemption-requests', require('./routes/api/v1/admin/redemptionRequest.routes'));
-     
+
 // ✅ Mobile Redemption Request Routes (Business Owner)
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/warrantyRedemption.routes'));
+
+// Mobile groups endpoint (BO dropdown for multi-account)
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/group.routes'));
+
+// Mobile app-version endpoint (ForceUpdateChecker)
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/appVersion.routes'));
+
+// Mobile sales-reps endpoint (BO registration dropdown)
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/salesRep.routes'));
 
 app.use('/api/v1/admin/sales-reps', require('./routes/api/v1/admin/salesRep.routes'));
 app.use('/api/v1/admin/branch-managers', require('./routes/api/v1/admin/branchManager.routes'));
@@ -99,10 +118,10 @@ app.use('/api/v1/admin/brand-master', brandMasterRoutes);
 // // ✅ Technician Admin Routes (Admin management)
 // app.use('/api/v1/admin/technicians', require('./routes/api/v1/admin/technician.routes'));
 const mobileLinkRoutes = require('./routes/api/v1/mobile/link.mobile.routes');
-const adminLinkRoutes  = require('./routes/api/v1/admin/link.admin.routes');
+const adminLinkRoutes = require('./routes/api/v1/admin/link.admin.routes');
 
 app.use('/api/v1/mobile', mobileLinkRoutes);
-app.use('/api/v1/admin',  adminLinkRoutes);
+app.use('/api/v1/admin', adminLinkRoutes);
 
 const analyticsRoutes = require('./routes/api/v1/admin/analytics.routes');
 
