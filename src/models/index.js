@@ -4,6 +4,7 @@ const DataTypes = Sequelize.DataTypes; // ✅ FIXED HERE
  
 // Models
 const ProductModel = require('./product.model');
+const LubricantSerialCodeModel = require('./lubricantSerialCode.model');
 const OfferModel = require('./offer.model');
 const UserModel = require('./user.model');
 const UserRole = require('./userRole.model'); // already initialized
@@ -31,11 +32,13 @@ const DutyModel = require('./privilege/duty.model');
 const PrivilegeModel = require('./privilege/privileges.model');
 const RoleDutyModel = require('./privilege/roleDuty.model');
 const DutyPrivilegeModel = require('./privilege/dutyPrivilege.model');
+
  
 /** -------------------------------------------------------- */
  
 // Initialize Models
 const Product = ProductModel(sequelize, DataTypes);
+const LubricantSerialCode = LubricantSerialCodeModel(sequelize, DataTypes);
 const Offer = OfferModel(sequelize, DataTypes);
 const User = UserModel(sequelize, DataTypes);
 const Reward = RewardModel(sequelize, DataTypes);
@@ -110,6 +113,7 @@ module.exports = {
   Sequelize,
   DataTypes,
   Product,
+  LubricantSerialCode,
   Offer,
   User,
   Reward,

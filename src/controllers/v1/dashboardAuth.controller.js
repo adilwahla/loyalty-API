@@ -140,13 +140,30 @@ exports.loginUser = async (req, res) => {
     const variants = phoneVariants(phoneNumber);
  
     const user = await User.findOne({ where: { phoneNumber: { [Op.in]: variants } } });
-    if (!user) return res.status(403).json({ message: 'Invalid credentials' });
+    if (!user) {
+  return res.status(403).json({
+    success: false,
+    message: 'Account not found.'
+  });
+}
+
  
     const allowed = await roleAllowedOnDashboard(user.role);
-    if (!allowed) return res.status(403).json({ message: 'Not allowed to access dashboard' });
+   
+if (!allowed) {
+  return res.status(403).json({
+    success: false,
+    message: 'You are not allowed to access the dashboard.'
+  });
+}
  
     const isMatch = await bcrypt.compare(password, user.password || 'Aa102030');
-    if (!isMatch) return res.status(403).json({ message: 'Invalid credentials' });
+   if (!isMatch) {
+  return res.status(403).json({
+    success: false,
+    message: 'Your password is incorrect. Please try again.'
+  });
+}
  
     // SUPER_ADMIN full access
     if (user.role === 'SUPER_ADMIN') {

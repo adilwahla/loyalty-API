@@ -8,122 +8,360 @@ const { getWarrantyFromWP , NotFoundError, ExternalServiceError} = require('../.
 const { emitAnalytics } = require('../../utils/analytics.emit');
 const { BrandMaster } = require('../../models');
 const { toWarrantyView } = require('../../utils/warrantyTransform'); // ✅ Import
+const { LubricantSerialCode, Product } = require('../../models');
 let batteryBrand = '-';
 let batteryType = '-';
 
+
 exports.createScan = async (req, res) => {
+  const io = req.app.get('io');
   try {
     const userId = req.params.UUID;
-    const { timestamp, geolocation, warrantyNumber } = req.body; 
+    const { timestamp, geolocation, warrantyNumber } = req.body;
 
     console.log('🔵 Incoming Scan Request:', { userId, timestamp, warrantyNumber, geolocation });
 
     if (!userId || !timestamp || !warrantyNumber) {
       throw new Error('userId, timestamp, and warrantyNumber are required');
     }
-  // ✅ Step 1: Check if warrantyNumber already exists in WarrantyScan
-  // const existing = await WarrantyScan.findOne({
-  //   where: { warrantyNumber },  // or { userId, warrantyNumber } if you want per-user uniqueness
-  // });
 
-  // if (existing) {
-  //   // ✅ Duplicate found → throw error (controller will return 409)
-  //   const err = new Error('Duplicate scan not allowed');
-  //   err.code = 'DUPLICATE_SCAN';
-  //   err.http = 409;
-  //   throw err;
-  // }
+    const code = warrantyNumber;
+
     let brandType = '-';
-    // let brand='-';
     let type = '-';
     let productName = '-';
     let points = '-';
-    // let batteryBrand = '-';
-    // let batteryType = '-';
+    let scanType = 'warranty';
+    let sku = null;
 
-    const rawWpData = await getWarrantyFromWP(warrantyNumber);
-    console.log('✅ Raw WP Data:', rawWpData);
+    //--------------------------------------------------
+    // 1️⃣ WARRANTY CHECK FIRST (PRIORITY)
+    //--------------------------------------------------
 
-    const wp = toWarrantyView(rawWpData);
-    console.log('✅ Transformed WP View:', wp);
+    let wp = null;
 
-    if (wp?.Brand) {
-      brandType = wp.Brand;
+    try {
+      const rawWpData = await getWarrantyFromWP(code);
+      console.log('✅ Raw WP Data:', rawWpData);
 
-      const brandDoc = await BrandMaster.findOne({ where: { brand: brandType } });
-      if (brandDoc) {
-        //  productName = `${brand.brand} ${brand.type || ''}`.trim();
-        batteryBrand = brandDoc.brand;
-        batteryType = String(brandDoc.type || '-');
-        // brand = `${brand.brand}`;
-        type = String(brandDoc.type || '-');
-        points = String(brandDoc.basePoints || '-');
-        console.log('✅ BrandMaster Match:', { batteryBrand, batteryType, points });
+      wp = toWarrantyView(rawWpData);
+      console.log('✅ Transformed WP View:', wp);
+    } catch (err) {
+      if (err instanceof NotFoundError) {
+        console.log('⚠️ Warranty not found → checking lubricant codes');
       } else {
-        console.warn('⚠️ Brand not found in BrandMaster:', brandType);
+        throw err;
       }
-    } else {
-      console.warn('⚠️ No Brand found in WP view.');
     }
+
+    //--------------------------------------------------
+    // 2️⃣ WARRANTY FLOW
+    //--------------------------------------------------
+
+    if (wp) {
+      if (wp?.Brand) {
+        brandType = wp.Brand;
+
+        const brandDoc = await BrandMaster.findOne({
+          where: { brand: brandType }
+        });
+
+        if (brandDoc) {
+          batteryBrand = brandDoc.brand;
+          batteryType = String(brandDoc.type || '-');
+          type = String(brandDoc.type || '-');
+          points = String(brandDoc.basePoints || '-');
+
+          console.log('✅ BrandMaster Match:', { batteryBrand, batteryType, points });
+        } else {
+          console.warn('⚠️ Brand not found in BrandMaster:', brandType);
+        }
+      }
+
+      scanType = 'warranty';
+    }
+
+    //--------------------------------------------------
+    // 3️⃣ LUBRICANT FLOW (IF WARRANTY NOT FOUND)
+    //--------------------------------------------------
+
+    else {
+      const serial = await LubricantSerialCode.findOne({
+        where: { serial_code: code }
+      });
+
+      if (!serial) {
+        throw new Error('Invalid QR Code');
+      }
+
+ if (serial.status === 'scanned') {
+
+  const product = await Product.findOne({
+    where: {
+      sku: serial.bsg_code,
+      status: 'Published'
+    }
+  });
+
+  return res.status(200).json({
+    success: false,
+    type: "lubricant",
+    message: "Already scanned",
+    product: {
+      title: product?.title || '',
+      nameArabic: product?.nameArabic || ''
+    },
+    duplicate: true,
+    genuine: true
+  });
+}
+
+      const product = await Product.findOne({
+        where: {
+          sku: serial.bsg_code,
+          status: 'Published'
+        }
+      });
+
+      if (!product) {
+        throw new Error('Product not available');
+      }
+
+      productName = product.title;
+      batteryBrand = product.title;
+      batteryType = product.units || '-';
+      brandType = product.units || '-';
+      sku = product.sku;
+      points = product.basePoints || 0;
+
+      scanType = 'lubricant';
+
+      await serial.update({
+        status: 'scanned',
+        scanned_by: userId,
+        scanned_at: new Date()
+      });
+
+      console.log('🟢 Lubricant QR matched:', { sku, productName, points });
+    }
+
+    //--------------------------------------------------
+    // 4️⃣ SAVE SCAN
+    //--------------------------------------------------
 
     const scan = await ScanService.createScan({
       userId,
       timestamp,
       geolocation,
-      warrantyNumber,
-      brand: batteryBrand,      // ✅ store brand (Zoom)
-      brandType: batteryType,   // ✅ store type (EFB)
-      points,
-      // batteryBrand,
+      warrantyNumber: code,
+      brand: batteryBrand,
+      brandType: batteryType,
+      sku,
       productName,
       points,
-
-
+      scanType,
     });
-    // ✅ Emit scan created event to admin clients
-    const io = req.app.get('io');
-    
- // get owner details (the one who submitted the scan)
-const owner = await User.findByPk(userId, {
-  attributes: ['id', 'salesRepId'],
-  raw: true,
+//--------------------------------------------------
+// 4️⃣.1 AUTO APPROVE LUBRICANT SCANS
+//--------------------------------------------------
+
+if (scanType === "lubricant") {
+  await ScanService.updateScanStatus(scan.id, "approved", io);
+}
+    //--------------------------------------------------
+    // 5️⃣ SOCKET EVENTS
+    //--------------------------------------------------
+
+   // const io = req.app.get('io');
+
+    const owner = await User.findByPk(userId, {
+      attributes: ['id', 'salesRepId'],
+      raw: true,
+    });
+
+    const repKey = owner?.salesRepId;
+
+    const payload = {
+      userId,
+      warrantyNumber: code,
+      brandType,
+      productName,
+      batteryType,
+      batteryBrand,
+      sku,
+      points,
+      scanType,
+      timestamp: scan.createdAt || timestamp,
+    };
+
+    io.to('role:SUPER_ADMIN').emit('new_scan', payload);
+    io.to('role:ADMIN').emit('new_scan', payload);
+    if (repKey) io.to(`rep:${repKey}`).emit('new_scan', payload);
+
+    io.to(String(userId)).emit('new_scan', payload);
+
+    console.log('📡 Emitted new_scan:', payload);
+
+    //--------------------------------------------------
+    // 6️⃣ RESPONSE
+    //--------------------------------------------------
+
+ //--------------------------------------------------
+// 6️⃣ RESPONSE
+//--------------------------------------------------
+
+if (scanType === 'lubricant') {
+  return res.status(201).json({
+    success: true,
+    type: "lubricant",
+    message: "Genuine Product",
+    product: {
+      title: productName,
+      nameArabic: productName
+    },
+    pointsAwarded: points
+  });
+}
+
+return res.status(201).json({
+  success: true,
+  type: "warranty",
+  message: "Warranty scan saved.",
+  data: scan
 });
-
-// safely extract the repKey
-const repKey = owner?.salesRepId;
-
-// build the minimal payload you want
-const payload = {
-  userId,
-  warrantyNumber,
-  brandType,
-  productName,
-  batteryType,
-  batteryBrand,
-  points,
-  timestamp: scan.createdAt || timestamp, // ✅ use DB timestamp if available
-};
-
-// broadcast to all relevant rooms
-io.to('role:SUPER_ADMIN').emit('new_scan', payload);
-io.to('role:ADMIN').emit('new_scan', payload);
-if (repKey) io.to(`rep:${repKey}`).emit('new_scan', payload);
-
-// optional: send to the user who scanned it (for mobile app real-time update)
-io.to(String(userId)).emit('new_scan', payload);
-
-console.log('📡 Emitted new_scan:', payload);
-    res.status(201).json({ success: true, message: 'Warranty scan saved.', data: scan });
 
   } catch (err) {
     console.error('❌ Scan Creation Error:', err.message);
-  if (err.code === 'DUPLICATE_SCAN') {
-      return res.status(409).json({ success: false, message: 'Duplicate scan not allowed' });
+
+    if (err.code === 'DUPLICATE_SCAN') {
+    return res.status(200).json({
+      success: false,
+      code: "DUPLICATE",
+      message: "Duplicate scan not allowed"
+    });
     }
 
-    res.status(400).json({ success: false, message: err.message });
+    res.status(400).json({
+      success: false,
+      message: err.message
+    });
   }
 };
+
+
+// exports.createScan = async (req, res) => {
+//   try {
+//     const userId = req.params.UUID;
+//     const { timestamp, geolocation, warrantyNumber } = req.body; 
+
+//     console.log('🔵 Incoming Scan Request:', { userId, timestamp, warrantyNumber, geolocation });
+
+//     if (!userId || !timestamp || !warrantyNumber) {
+//       throw new Error('userId, timestamp, and warrantyNumber are required');
+//     }
+//   // ✅ Step 1: Check if warrantyNumber already exists in WarrantyScan
+//   // const existing = await WarrantyScan.findOne({
+//   //   where: { warrantyNumber },  // or { userId, warrantyNumber } if you want per-user uniqueness
+//   // });
+
+//   // if (existing) {
+//   //   // ✅ Duplicate found → throw error (controller will return 409)
+//   //   const err = new Error('Duplicate scan not allowed');
+//   //   err.code = 'DUPLICATE_SCAN';
+//   //   err.http = 409;
+//   //   throw err;
+//   // }
+//     let brandType = '-';
+//     // let brand='-';
+//     let type = '-';
+//     let productName = '-';
+//     let points = '-';
+//     // let batteryBrand = '-';
+//     // let batteryType = '-';
+
+//     const rawWpData = await getWarrantyFromWP(warrantyNumber);
+//     console.log('✅ Raw WP Data:', rawWpData);
+
+//     const wp = toWarrantyView(rawWpData);
+//     console.log('✅ Transformed WP View:', wp);
+
+//     if (wp?.Brand) {
+//       brandType = wp.Brand;
+
+//       const brandDoc = await BrandMaster.findOne({ where: { brand: brandType } });
+//       if (brandDoc) {
+//         //  productName = `${brand.brand} ${brand.type || ''}`.trim();
+//         batteryBrand = brandDoc.brand;
+//         batteryType = String(brandDoc.type || '-');
+//         // brand = `${brand.brand}`;
+//         type = String(brandDoc.type || '-');
+//         points = String(brandDoc.basePoints || '-');
+//         console.log('✅ BrandMaster Match:', { batteryBrand, batteryType, points });
+//       } else {
+//         console.warn('⚠️ Brand not found in BrandMaster:', brandType);
+//       }
+//     } else {
+//       console.warn('⚠️ No Brand found in WP view.');
+//     }
+
+//     const scan = await ScanService.createScan({
+//       userId,
+//       timestamp,
+//       geolocation,
+//       warrantyNumber,
+//       brand: batteryBrand,      // ✅ store brand (Zoom)
+//       brandType: batteryType,   // ✅ store type (EFB)
+//       points,
+//       // batteryBrand,
+//       productName,
+//       points,
+
+
+//     });
+//     // ✅ Emit scan created event to admin clients
+//     const io = req.app.get('io');
+    
+//  // get owner details (the one who submitted the scan)
+// const owner = await User.findByPk(userId, {
+//   attributes: ['id', 'salesRepId'],
+//   raw: true,
+// });
+
+// // safely extract the repKey
+// const repKey = owner?.salesRepId;
+
+// // build the minimal payload you want
+// const payload = {
+//   userId,
+//   warrantyNumber,
+//   brandType,
+//   productName,
+//   batteryType,
+//   batteryBrand,
+//   points,
+//   timestamp: scan.createdAt || timestamp, // ✅ use DB timestamp if available
+// };
+
+// // broadcast to all relevant rooms
+// io.to('role:SUPER_ADMIN').emit('new_scan', payload);
+// io.to('role:ADMIN').emit('new_scan', payload);
+// if (repKey) io.to(`rep:${repKey}`).emit('new_scan', payload);
+
+// // optional: send to the user who scanned it (for mobile app real-time update)
+// io.to(String(userId)).emit('new_scan', payload);
+
+// console.log('📡 Emitted new_scan:', payload);
+//     res.status(201).json({ success: true, message: 'Warranty scan saved.', data: scan });
+
+//   } catch (err) {
+//     console.error('❌ Scan Creation Error:', err.message);
+//   if (err.code === 'DUPLICATE_SCAN') {
+//       return res.status(409).json({ success: false, message: 'Duplicate scan not allowed' });
+//     }
+
+//     res.status(400).json({ success: false, message: err.message });
+//   }
+// };
 // exports.createScan = async (req, res) => {
 //   try {
 //     const userId = req.params.UUID;

@@ -6,11 +6,17 @@ class NotFoundError extends Error { constructor(msg){ super(msg); this.name='Not
 class ExternalServiceError extends Error { constructor(msg){ super(msg); this.name='ExternalServiceError'; this.status=503; } }
 
 async function getWarrantyFromWP(warrantyNumber) {
+  // const sql = `
+  //   SELECT * FROM \`CW7OK167O_tablesome_table_1201\`
+  //   WHERE column_2 = ?
+  //   LIMIT 1
+  // `;
   const sql = `
-    SELECT * FROM \`CW7OK167O_tablesome_table_1201\`
-    WHERE column_2 = ?
-    LIMIT 1
-  `;
+SELECT *
+FROM warranty_clean
+WHERE warranty_number = ?
+LIMIT 1
+`;
 
    try {
     const rows = await wordpressSequelize.query(sql, {
