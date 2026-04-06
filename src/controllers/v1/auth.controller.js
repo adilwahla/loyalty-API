@@ -1,0 +1,221 @@
+const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
+const { Op } = require('sequelize');
+const { success, error } = require('../../utils/response');
+const db = require('../../models'); // central model loader
+const User = db.User;
+const UserRole = db.UserRole;
+const Group = db.Group;
+const { sendMobishastraSms: sendSms } = require('../../utils/sendMobishastraSms');
+const normalizePhone = require('../../utils/normalizePhone');
+const { setOtp, verifyOtp, clearOtp } = require('../../utils/otpCache');
+const { emitBOCreated } = require('../../utils/boEvents');
+const ENABLE_OTP = process.env.ENABLE_OTP_VERIFICATION === 'true';
+// 1️⃣ Send OTP
+exports.sendOtp = async (req, res) => {
+  const { phoneNumber } = req.body;
+  const normalizedPhone = normalizePhone(phoneNumber);
+  console.log(`[OTP] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+  const otp = Math.floor(1000 + Math.random() * 9000).toString();
+  const sent = await sendSms(phoneNumber, otp);
+  console.log(`[OTP] Generated OTP for ${phoneNumber} (normalized: ${normalizedPhone}): ${otp}`);
+  if (!sent) return res.status(500).json({ message: 'Failed to send OTP' });
+  if (!ENABLE_OTP) {
+    console.log(`[DEV] Skipping OTP send for ${phoneNumber}`);
+    setOtp(normalizedPhone, '1234');
+    return res.status(200).json({ message: 'OTP sent (bypassed)', otp: '1234', expiresAt: Date.now() + 5 * 60 * 1000 });
+  }
+  setOtp(normalizedPhone, otp);
+  const expiresAt = Date.now() + 5 * 60 * 1000;
+  res.json({ message: 'OTP sent', expiresAt });
+};
+// 2️⃣ Verify OTP
+exports.verifyOtp = async (req, res) => {
+  const { phoneNumber, otpCode } = req.body;
+  const normalizedPhone = normalizePhone(phoneNumber);
+  console.log(`[VERIFY] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+  console.log(`Verifying OTP for: phoneNumber ${normalizedPhone} otpCode ${otpCode}`);
+  if (!verifyOtp(normalizedPhone, otpCode)) return res.status(400).json({ message: 'Invalid or expired OTP' });
+  const user = await User.findOne({ where: { phoneNumber: normalizedPhone } });
+  if (user) await user.update({ isOtpVerified: true });
+  clearOtp(normalizedPhone);
+  res.json({ message: 'OTP verified', user });
+};
+// 3️⃣ Set Password
+exports.setPassword = async (req, res) => {
+  const { phoneNumber, password } = req.body;
+  const normalizedPhone = normalizePhone(phoneNumber);
+  console.log(`[SET_PASSWORD] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+  const user = await User.findOne({ where: { phoneNumber: normalizedPhone } });
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  const hashed = await bcrypt.hash(password, 10);
+  await user.update({ password: hashed });
+  res.json({ message: 'Password set successfully' });
+};
+// 4️⃣ Register User
+exports.registerUser = async (req, res) => {
+  const {
+    phoneNumber, role, name,
+    iqamaNumber, fullName, businessName,
+    vatNumber, businessAddress,
+    latitude, longitude,
+    bsgCustId, salesRepId, deviceToken, email,
+    groupId
+  } = req.body;
+  try {
+    const normalizedPhone = normalizePhone(phoneNumber);
+    console.log(`[REGISTER] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+    const validRole = await UserRole.findOne({
+      where: { roleName: role.toUpperCase(), platform: 'Mobile' }
+    });
+    if (!validRole) return res.status(400).json({ message: 'Invalid role for Mobile platform' });
+    const normalizedRole = role.toUpperCase();
+    const existing = await User.findOne({ where: { phoneNumber: normalizedPhone } });
+    if (existing) {
+      if (normalizedRole !== 'BUSINESS_OWNER' || existing.role !== 'BUSINESS_OWNER') {
+        return res.status(409).json({ message: 'User already registered' });
+      }
+    }
+    const status = normalizedRole === 'BUSINESS_OWNER' ? 'PENDING' : '-';
+    const user = await User.create({
+      phoneNumber: normalizedPhone,
+      role: normalizedRole,
+      name,
+      iqamaNumber,
+      fullName,
+      businessName,
+      vatNumber,
+      businessAddress,
+      latitude: latitude ? parseFloat(latitude) : null,
+      longitude: longitude ? parseFloat(longitude) : null,
+      bsgCustId,
+      salesRepId,
+      isOtpVerified: true,
+      status,
+      email,
+      deviceToken: deviceToken || null,
+      groupId: groupId ? parseInt(groupId, 10) : null,
+    });
+    const io = req.app.get('io');
+    if (io) {
+      io.to('admins').emit('bo_created', {
+        id: user.id,
+        fullName: user.fullName ?? null,
+        phoneNumber: user.phoneNumber ?? null,
+        bsgCustId: user.bsgCustId ?? null,
+        businessName: user.businessName ?? null,
+        vatNumber: user.vatNumber ?? null,
+        businessAddress: user.businessAddress ?? null,
+        salesRepId: user.salesRepId ?? null,
+        email: user.email ?? null,
+        rawStatus: user.status,
+        status: user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status),
+        at: new Date().toISOString(),
+      });
+    }
+    return res.status(201).json({ message: 'User registered', user });
+  } catch (err) {
+    console.error('Registration error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+};
+// 5️⃣ Login User
+exports.loginUser = async (req, res) => {
+  const { phoneNumber, password } = req.body;
+  const normalizedPhone = normalizePhone(phoneNumber);
+  console.log(`[LOGIN] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+  const user = await User.findOne({
+    where: {
+      phoneNumber: normalizedPhone,
+      password: { [Op.ne]: null },
+    },
+    include: [{
+      model: Group,
+      as: 'group',
+      required: false,
+      attributes: ['groupId', 'groupName', 'groupNameAR', 'colorHex'],
+    }],
+  });
+  if (!user) return res.status(403).json({ success: false, message: 'Invalid credentials' });
+  const otpRequiredRoles = ['CUSTOMER', 'TECHNICIAN', 'BUSINESS_OWNER'];
+  if (otpRequiredRoles.includes(user.role.toUpperCase()) && !user.isOtpVerified) {
+    return res.status(401).json({ success: false, message: 'Please verify your phone number first' });
+  }
+  if (!user.password || !(await bcrypt.compare(password, user.password))) {
+    return res.status(403).json({ success: false, message: 'Invalid credentials' });
+  }
+  if (user.role === 'BUSINESS_OWNER' && user.status !== 'APPROVED') {
+    return res.status(403).json({
+      success: false,
+      code: 'BO_APPROVAL_REQUIRED',
+      message: 'Your account is pending admin approval.',
+      status: user.status,
+    });
+  }
+  const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
+  const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn });
+  const userSafe = { ...user.toJSON() };
+  delete userSafe.password;
+  return res.status(200).json({ success: true, message: 'Login successful', token, user: userSafe });
+};
+// 6️⃣ Forgot Password Flow
+exports.forgotPasswordSendOtp = async (req, res) => {
+  const { phoneNumber } = req.body;
+  if (!phoneNumber) return res.status(400).json({ message: 'Phone number is required' });
+  const normalizedPhone = normalizePhone(phoneNumber);
+  console.log(`[FORGOT] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+  const user = await User.findOne({ where: { phoneNumber: normalizedPhone, password: { [Op.ne]: null } } });
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  const otp = process.env.NODE_ENV === 'development' ? '1234' : Math.floor(1000 + Math.random() * 9000).toString();
+  const sent = await sendSms(phoneNumber, otp);
+  if (!sent) return res.status(500).json({ message: 'Failed to send OTP' });
+  setOtp(normalizedPhone, otp);
+  const expiresAt = Date.now() + 5 * 60 * 1000;
+  console.log(`[FORGOT] OTP sent to ${phoneNumber} (normalized: ${normalizedPhone}): ${otp}`);
+  res.json({ message: 'OTP sent', expiresAt });
+};
+exports.forgotPasswordVerifyOtp = async (req, res) => {
+  const { phoneNumber, otpCode } = req.body;
+  const normalizedPhone = normalizePhone(phoneNumber);
+  console.log(`[FORGOT VERIFY] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+  if (!verifyOtp(normalizedPhone, otpCode)) return res.status(400).json({ message: 'Invalid or expired OTP' });
+  const user = await User.findOne({ where: { phoneNumber: normalizedPhone } });
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  await user.update({ isOtpVerified: true });
+  clearOtp(normalizedPhone);
+  res.json({ message: 'OTP verified', user });
+};
+exports.forgotPasswordResetPassword = async (req, res) => {
+  const { phoneNumber, newPassword } = req.body;
+  if (!phoneNumber || !newPassword) return res.status(400).json({ message: 'Phone number and new password required' });
+  const normalizedPhone = normalizePhone(phoneNumber);
+  console.log(`[FORGOT RESET] Original: ${phoneNumber}, Normalized: ${normalizedPhone}`);
+  const user = await User.findOne({ where: { phoneNumber: normalizedPhone, password: { [Op.ne]: null } } });
+  if (!user) return res.status(404).json({ message: 'User not found' });
+  if (!user.isOtpVerified) return res.status(400).json({ message: 'Please verify OTP first' });
+  const hashed = await bcrypt.hash(newPassword, 10);
+  await user.update({ password: hashed });
+  console.log(`[FORGOT RESET] Password reset successfully for ${normalizedPhone}`);
+  res.json({ message: 'Password reset successfully' });
+};
+// 7️⃣ Login SalesRep
+exports.loginSalesRep = async (req, res) => {
+  const { salesRepId, password } = req.body;
+  console.log(`[LOGIN] SalesRep login attempt for ID: ${salesRepId}`);
+  const allUsers = await User.findAll({ where: { salesRepId }, order: [['createdAt', 'ASC']] });
+  const user = allUsers.find(u => u.role && u.role.toUpperCase().trim() === 'SALES_REP');
+  if (!user) return res.status(403).json({ success: false, message: 'Invalid credentials' });
+  const otpRequiredRoles = ['SALES_REP'];
+  if (otpRequiredRoles.includes(user.role.toUpperCase()) && !user.isOtpVerified) {
+    return res.status(401).json({ success: false, message: 'Please verify your phone number first' });
+  }
+  if (!user.password || !(await bcrypt.compare(password, user.password))) {
+    return res.status(403).json({ success: false, message: 'Invalid credentials' });
+  }
+  const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
+  const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn });
+  const userSafe = { ...user.toJSON() };
+  delete userSafe.password;
+  userSafe.apiToken = token;
+  return res.status(200).json(success('Login successful', userSafe));
+};
