@@ -6,7 +6,12 @@
     "start": "node src/app.js",
     "dev": "nodemon src/app.js",
     "seed:roles": "node src/seeders/seedUserRoles.js",
-    "seed:tasks": "node src/seeders/20251103-task-seeder.js"
+    "seed:tasks": "node src/seeders/20251103-task-seeder.js",
+    "migrate:parent-location": "node scripts/run-parent-location-migration.js",
+    "migrate:auto-activation-db-triggers": "node scripts/setup-auto-activation-db-triggers.js",
+    "cleanup:legacy-location-columns": "node scripts/drop-legacy-location-activation-columns.js",
+    "cleanup:tasks-parent-cust-id": "node scripts/cleanup-tasks-parent-cust-id.js",
+    "tasks:auto-activation:backfill": "node scripts/generate-auto-activation-tasks.js"
   },
   "dependencies": {
     "arabic-reshaper": "^1.1.0",

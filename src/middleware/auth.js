@@ -21,19 +21,24 @@ exports.protect = (allowedRoles = []) => {
 
 exports.authenticate = (req, res, next) => {
   const authHeader = req.headers.authorization;
-  if (!authHeader) {
-    console.log('[AUTH] ❌ No token provided');
+  const requestPath = req.originalUrl || req.url;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    console.log(`[AUTH] ❌ Missing/invalid Authorization header | path=${requestPath}`);
     return res.status(401).json({ error: 'No token provided' });
   }
 
   const token = authHeader.split(' ')[1];
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    console.log('[AUTH] ✅ Decoded token:', decoded);
+    console.log(`[AUTH] ✅ Token verified | path=${requestPath} | role=${decoded?.role} | userId=${decoded?.id}`);
     req.user = decoded;
     next();
   } catch (err) {
-    console.error('[AUTH] ❌ Invalid token', err.message);
+    const decodedUnsafe = jwt.decode(token);
+    console.error(
+      `[AUTH] ❌ Invalid token | path=${requestPath} | reason=${err.message} | role=${decodedUnsafe?.role || 'UNKNOWN'} | userId=${decodedUnsafe?.id || 'UNKNOWN'}`
+    );
     return res.status(401).json({ error: 'Invalid token' });
   }
 };

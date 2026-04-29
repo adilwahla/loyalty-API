@@ -71,6 +71,11 @@ module.exports = (sequelize, DataTypes) => {
       allowNull: true,
       field: 'bsg_cust_id',
     },
+    parentCustId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: 'parent_cust_id',
+    },
     branchManagerId: {
       type: DataTypes.STRING,
       allowNull: true,
@@ -122,5 +127,21 @@ groupId: {
   }, {
     tableName: 'users',
     timestamps: true,
+    indexes: [
+      { fields: ['parent_cust_id'] },
+      { fields: ['bsg_cust_id'] },
+    ],
+    hooks: {
+      afterSave(user) {
+        const role = String(user.role || '').toUpperCase();
+        if (role !== 'BUSINESS_OWNER') return;
+        const sync = require('../services/v1/customerActivationTaskSync.service');
+        setImmediate(() => {
+          sync.syncAfterBusinessOwnerPersist(user.id).catch((err) => {
+            console.error('[activation-task-sync] BO afterSave:', err.message);
+          });
+        });
+      },
+    },
   });
 };

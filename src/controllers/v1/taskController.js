@@ -1,7 +1,18 @@
 const taskService = require("../../services/v1/taskService");
 const { success, error } = require("../../utils/response");
 const { emitTaskCreated, emitTaskUpdated, emitTaskCompleted, emitTaskAssigned } = require("../../utils/taskEvents");
- 
+
+/** Plain JSON for API; NFC group fields are added afterward via applyActivationNfcToSerializedTasks. */
+function serializeTaskForApiResponse(task) {
+  const serialized = task && typeof task.toJSON === "function" ? task.toJSON() : task;
+  const rawCust = task?.dataValues?.customer ?? task?.customer;
+  if (serialized?.customer && rawCust) {
+    serialized.customer.latitude = rawCust.latitude ?? serialized.customer.latitude ?? null;
+    serialized.customer.longitude = rawCust.longitude ?? serialized.customer.longitude ?? null;
+  }
+  return serialized;
+}
+
 // ✅ Get all tasks
 exports.getAllTasks = async (req, res) => {
   try {
@@ -27,7 +38,9 @@ exports.getAllTasks = async (req, res) => {
       }
     }
  
-    res.json(success("Tasks fetched successfully", tasks));
+    const serializedTasks = tasks.map(serializeTaskForApiResponse);
+    await taskService.applyActivationNfcToSerializedTasks(serializedTasks);
+    res.json(success("Tasks fetched successfully", serializedTasks));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks", err.message));
   }
@@ -38,7 +51,9 @@ exports.getTaskById = async (req, res) => {
   try {
     const task = await taskService.getTaskById(req.params.id);
     if (!task) return res.status(404).json(error("Task not found"));
-    res.json(success("Task fetched successfully", task));
+    const serialized = serializeTaskForApiResponse(task);
+    await taskService.applyActivationNfcToSerializedTasks([serialized]);
+    res.json(success("Task fetched successfully", serialized));
   } catch (err) {
     res.status(500).json(error("Failed to fetch task", err.message));
   }
@@ -47,43 +62,32 @@ exports.getTaskById = async (req, res) => {
 // ✅ Get tasks by sales rep (userId)
 exports.getTaskByUser = async (req, res) => {
   try {
-    const tasks = await taskService.getTaskByUser(req.params.id);
+    const tasks = await taskService.getTasksAssignedToUser(req.params.id);
  
-    // Debug logging to verify customer coordinates
-    if (process.env.NODE_ENV !== 'production' && tasks && tasks.length > 0) {
-      const sampleTask = tasks[0];
-      if (sampleTask.customer) {
-        console.log(`📍 [TaskController] Sample task customer coordinates:`, {
-          taskId: sampleTask.id,
-          customerId: sampleTask.customerId,
-          customerLatitude: sampleTask.customer.latitude,
-          customerLongitude: sampleTask.customer.longitude,
-          latitudeType: typeof sampleTask.customer.latitude,
-          longitudeType: typeof sampleTask.customer.longitude,
-          hasCoordinates: !!(sampleTask.customer.latitude && sampleTask.customer.longitude),
-          customerKeys: Object.keys(sampleTask.customer),
-          customerLatInKeys: 'latitude' in sampleTask.customer,
-          customerLngInKeys: 'longitude' in sampleTask.customer
-        });
-      }
-    }
- 
-    // Ensure all tasks have serialized customer coordinates
-    const serializedTasks = tasks.map(task => {
-      if (task && task.customer) {
-        const serialized = task.toJSON ? task.toJSON() : task;
-        if (serialized.customer) {
-          serialized.customer.latitude = task.customer.latitude || null;
-          serialized.customer.longitude = task.customer.longitude || null;
-        }
-        return serialized;
-      }
-      return task.toJSON ? task.toJSON() : task;
-    });
+    const serializedTasks = tasks.map(serializeTaskForApiResponse);
+    await taskService.applyActivationNfcToSerializedTasks(serializedTasks);
  
     res.json(success("Tasks fetched successfully", serializedTasks));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by user", err.message));
+  }
+};
+
+// ✅ Get tasks assigned to authenticated user (single source of truth: tasks.userId)
+exports.getMyTasks = async (req, res) => {
+  try {
+    const authUserId = req.user?.id;
+    if (!authUserId) {
+      return res.status(401).json(error("Authentication required"));
+    }
+
+    const tasks = await taskService.getTasksAssignedToUser(authUserId);
+    const serializedTasks = tasks.map(serializeTaskForApiResponse);
+    await taskService.applyActivationNfcToSerializedTasks(serializedTasks);
+
+    return res.json(success("Tasks fetched successfully", serializedTasks));
+  } catch (err) {
+    return res.status(500).json(error("Failed to fetch my tasks", err.message));
   }
 };
  
@@ -91,7 +95,9 @@ exports.getTaskByUser = async (req, res) => {
 exports.getTasksByCustomer = async (req, res) => {
   try {
     const tasks = await taskService.getTasksByCustomer(req.params.customerId);
-    res.json(success("Tasks fetched successfully", tasks));
+    const serializedTasks = tasks.map(serializeTaskForApiResponse);
+    await taskService.applyActivationNfcToSerializedTasks(serializedTasks);
+    res.json(success("Tasks fetched successfully", serializedTasks));
   } catch (err){
     res.status(500).json(error("Failed to fetch tasks by customer", err.message));
   }
@@ -101,7 +107,9 @@ exports.getTasksByCustomer = async (req, res) => {
 exports.getTasksByStatus = async (req, res) => {
   try {
     const tasks = await taskService.getTasksByStatus(req.params.status);
-    res.json(success("Tasks fetched successfully", tasks));
+    const serializedTasks = tasks.map(serializeTaskForApiResponse);
+    await taskService.applyActivationNfcToSerializedTasks(serializedTasks);
+    res.json(success("Tasks fetched successfully", serializedTasks));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by status", err.message));
   }
@@ -111,7 +119,9 @@ exports.getTasksByStatus = async (req, res) => {
 exports.getTasksByPriority = async (req, res) => {
   try {
     const tasks = await taskService.getTasksByPriority(req.params.priority);
-    res.json(success("Tasks fetched successfully", tasks));
+    const serializedTasks = tasks.map(serializeTaskForApiResponse);
+    await taskService.applyActivationNfcToSerializedTasks(serializedTasks);
+    res.json(success("Tasks fetched successfully", serializedTasks));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by priority", err.message));
   }
@@ -124,7 +134,9 @@ exports.getTasksByDateRange = async (req, res) => {
     if (!startDate || !endDate)
       return res.status(400).json(error("Missing startDate or endDate query params"));
     const tasks = await taskService.getTasksByDateRange(startDate, endDate);
-    res.json(success("Tasks fetched successfully", tasks));
+    const serializedTasks = tasks.map(serializeTaskForApiResponse);
+    await taskService.applyActivationNfcToSerializedTasks(serializedTasks);
+    res.json(success("Tasks fetched successfully", serializedTasks));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by date range", err.message));
   }
@@ -140,7 +152,9 @@ exports.createTask = async (req, res) => {
       emitTaskCreated(io, task);
     }
  
-    res.status(201).json(success("Task created successfully", task));
+    const createdSerialized = serializeTaskForApiResponse(task);
+    await taskService.applyActivationNfcToSerializedTasks([createdSerialized]);
+    res.status(201).json(success("Task created successfully", createdSerialized));
   } catch (err) {
     res.status(500).json(error("Failed to create task", err.message));
   }
@@ -165,8 +179,11 @@ exports.updateTask = async (req, res) => {
       }
     }
  
-    const taskData = task.toJSON ? task.toJSON() : task;
-    const { oldUserId, ...taskResponse } = taskData;
+    const taskResponse = serializeTaskForApiResponse(task);
+    if (taskResponse && taskResponse.oldUserId !== undefined) {
+      delete taskResponse.oldUserId;
+    }
+    await taskService.applyActivationNfcToSerializedTasks([taskResponse]);
  
     res.json(success("Task updated successfully", taskResponse));
   } catch (err) {
@@ -191,8 +208,11 @@ exports.reassignTask = async (req, res) => {
       emitTaskAssigned(io, task, task.oldUserId);
     }
  
-    const taskData = task.toJSON ? task.toJSON() : task;
-    const { oldUserId, ...taskResponse } = taskData;
+    const taskResponse = serializeTaskForApiResponse(task);
+    if (taskResponse && taskResponse.oldUserId !== undefined) {
+      delete taskResponse.oldUserId;
+    }
+    await taskService.applyActivationNfcToSerializedTasks([taskResponse]);
  
     res.json(success("Task reassigned successfully", taskResponse));
   } catch (err) {

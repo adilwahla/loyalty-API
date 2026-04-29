@@ -4,7 +4,64 @@ const { Task, User, TaskReassignHistory, Group, sequelize, Sequelize } = require
  
 // Valid task type values
 const VALID_TASK_TYPES = ["Collection", "Promotion", "Up/Cross sell"];
- 
+
+/** All BO bsg_cust_id values in the same customer group as groupId (for NFC scan matching). */
+function linkedBsgCustIdsForActivationGroup(customers, groupId) {
+  if (!groupId || !customers?.length) return [];
+  const gid = String(groupId).trim();
+  const out = new Set();
+  customers.forEach((c) => {
+    if (String(c.role || '').toUpperCase() !== 'BUSINESS_OWNER') return;
+    const pid = c.parentCustId ? String(c.parentCustId).trim() : '';
+    const bid = c.bsgCustId ? String(c.bsgCustId).trim() : '';
+    if (pid === gid || bid === gid) {
+      if (c.bsgCustId) out.add(String(c.bsgCustId).trim());
+    }
+  });
+  return [...out];
+}
+
+const ACTIVATION_TASK_TITLE = 'Activate Customer Location';
+
+function isActivationPromotionTaskPayload(t) {
+  return (
+    !!t &&
+    !!t.customerId &&
+    String(t.taskTitle || '').trim() === ACTIVATION_TASK_TITLE &&
+    String(t.taskType || '').trim().toLowerCase() === 'promotion'
+  );
+}
+
+/**
+ * Writes linkedBsgCustIds / customerGroupKey onto already-serialized task objects.
+ * Runs after toJSON so fields are never dropped by Sequelize.
+ */
+async function applyActivationNfcToSerializedTasks(serializedTasks) {
+  if (!Array.isArray(serializedTasks) || !serializedTasks.length) return;
+  const needs = serializedTasks.some((t) => isActivationPromotionTaskPayload(t));
+  if (!needs) return;
+
+  const customers = await User.findAll({
+    where: {
+      role: 'BUSINESS_OWNER',
+      bsgCustId: { [Op.not]: null },
+    },
+    attributes: ['role', 'bsgCustId', 'parentCustId'],
+  });
+
+  serializedTasks.forEach((t) => {
+    if (!isActivationPromotionTaskPayload(t)) return;
+    const linked = linkedBsgCustIdsForActivationGroup(customers, t.customerId);
+    if (!linked.length) return;
+    const gk = String(t.customerId).trim();
+    t.customer = t.customer && typeof t.customer === 'object' ? t.customer : {};
+    t.customer.linkedBsgCustIds = linked;
+    t.customer.customerGroupKey = gk;
+    t.linkedBsgCustIds = linked;
+    t.customerGroupKey = gk;
+  });
+}
+
 // Helper: Load customers with groups for tasks (handles collation mismatch)
 async function loadCustomersForTasks(tasks) {
   if (!tasks || tasks.length === 0) return tasks;
@@ -20,6 +77,7 @@ async function loadCustomersForTasks(tasks) {
     attributes: [
       'id', 'phoneNumber', 'fullName', 'businessName', 'vatNumber',
       'businessAddress', 'latitude', 'longitude', 'bsgCustId',
+      'parentCustId',
       'salesRepId', 'status', 'email', 'groupId', 'createdAt', 'updatedAt'
     ],
     include: [{
@@ -31,7 +89,11 @@ async function loadCustomersForTasks(tasks) {
   });
  
   const customerMap = new Map();
+  const parentLocationMap = new Map();
   customers.forEach(customer => {
+    if (customer.parentCustId && customer.latitude != null && customer.longitude != null) {
+      parentLocationMap.set(String(customer.parentCustId).trim(), customer);
+    }
     if (customer.bsgCustId) {
       const key = String(customer.bsgCustId).trim();
       customerMap.set(key, customer);
@@ -52,15 +114,25 @@ async function loadCustomersForTasks(tasks) {
         const taskData = task.toJSON ? task.toJSON() : task;
         const customerData = customer.toJSON ? customer.toJSON() : customer;
  
-        const rawLat = customer.get ? customer.get('latitude') : (customer.latitude || customer.dataValues?.latitude);
-        const rawLng = customer.get ? customer.get('longitude') : (customer.longitude || customer.dataValues?.longitude);
+        const sharedLocationCustomer = customer.parentCustId
+          ? parentLocationMap.get(String(customer.parentCustId).trim())
+          : null;
+
+        const sourceForLocation = sharedLocationCustomer || customer;
+        const rawLat = sourceForLocation.get
+          ? sourceForLocation.get('latitude')
+          : (sourceForLocation.latitude || sourceForLocation.dataValues?.latitude);
+        const rawLng = sourceForLocation.get
+          ? sourceForLocation.get('longitude')
+          : (sourceForLocation.longitude || sourceForLocation.dataValues?.longitude);
  
         customerData.latitude = (rawLat !== undefined && rawLat !== null && rawLat !== 'null' && rawLat !== '') ? String(rawLat) : null;
         customerData.longitude = (rawLng !== undefined && rawLng !== null && rawLng !== 'null' && rawLng !== '') ? String(rawLng) : null;
  
         if (!('latitude' in customerData)) customerData.latitude = null;
         if (!('longitude' in customerData)) customerData.longitude = null;
- 
+
+        // NFC group list for tasks API only (does not toggle warranty/scan behavior — that still uses ENABLE_PARENT_LOCATION_FLOW elsewhere).
         taskData.customer = customerData;
  
         if (process.env.NODE_ENV !== 'production') {
@@ -123,6 +195,17 @@ function validateTaskType(taskType) {
 }
  
 class TaskService {
+  async getTasksAssignedToUser(userId) {
+    const normalizedUserId = String(userId || "").trim();
+    if (!normalizedUserId) return [];
+    const tasks = await Task.findAll({
+      where: { userId: normalizedUserId },
+      include: [{ model: User, as: "user" }],
+      order: [["updatedAt", "DESC"], ["dateTime", "DESC"]],
+    });
+    return await loadCustomersForTasks(tasks);
+  }
+
   async getAllTasks() {
     const tasks = await Task.findAll({ include: [{ model: User, as: "user" }] });
     return await loadCustomersForTasks(tasks);
@@ -148,8 +231,7 @@ class TaskService {
   }
  
   async getTaskByUser(userId) {
-    const tasks = await Task.findAll({ where: { userId }, include: [{ model: User, as: "user" }] });
-    return await loadCustomersForTasks(tasks);
+    return await this.getTasksAssignedToUser(userId);
   }
  
   async getTasksByCustomer(customerId) {
@@ -254,5 +336,7 @@ class TaskService {
     }
   }
 }
- 
-module.exports = new TaskService();
+
+const taskService = new TaskService();
+taskService.applyActivationNfcToSerializedTasks = applyActivationNfcToSerializedTasks;
+module.exports = taskService;

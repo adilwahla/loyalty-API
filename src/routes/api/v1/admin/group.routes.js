@@ -5,7 +5,12 @@ const GroupController = require('../../../../controllers/v1/group.controller');
 const { authenticate, restrictToRoles } = require('../../../../middleware/auth');
  
 // Get all groups (for filter dropdown in admin panel)
-router.get('/', authenticate, restrictToRoles('SUPER_ADMIN', 'ADMIN', 'BRANCH_MANAGER', 'SALES_ADMIN'), GroupController.getAllGroups);
+router.get(
+  '/',
+  authenticate,
+  restrictToRoles('SUPER_ADMIN', 'ADMIN', 'BRANCH_MANAGER', 'SALES_ADMIN', 'SALES_REP'),
+  GroupController.getAllGroups
+);
  
 module.exports = router;
  

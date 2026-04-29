@@ -1,8 +1,10 @@
 const express = require("express");
 const router = express.Router();
 const taskController = require("../../../../src/controllers/v1/taskController");
+const { authenticate } = require("../../../../src/middleware/auth");
  
 // ✅ Filter endpoints (must come first to avoid conflicts with /:id)
+router.get("/my", authenticate, taskController.getMyTasks);
 router.get("/user/:id", taskController.getTaskByUser);
 router.get("/customer/:customerId", taskController.getTasksByCustomer);
 router.get("/status/:status", taskController.getTasksByStatus);
