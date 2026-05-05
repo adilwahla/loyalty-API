@@ -7,6 +7,9 @@ router.post('/:UUID/warranty-scan', ctrl.createScan);      // create a scan for 
 router.get('/:UUID/warranty-scans', ctrl.getUserScans);    // list user scans
 router.get('/:UUID/points', ctrl.getUserTotalPoints);   // ✅ new: accumulated points
 
+
+// ✅ Guest scan — no auth, no UUID, read-only
+router.get('/guest/scan/:code', ctrl.guestScan);
 // quick ping
 router.get('/scan-ping', (_req, res) => res.send('mobile warrantyScan OK'));
 

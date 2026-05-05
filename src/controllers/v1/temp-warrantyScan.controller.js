@@ -9,6 +9,7 @@ const { emitAnalytics } = require('../../utils/analytics.emit');
 const { BrandMaster } = require('../../models');
 const { toWarrantyView } = require('../../utils/warrantyTransform'); // ✅ Import
 const { LubricantSerialCode, Product } = require('../../models');
+
 let batteryBrand = '-';
 let batteryType = '-';
 
@@ -17,12 +18,17 @@ exports.createScan = async (req, res) => {
   const io = req.app.get('io');
   try {
     const userId = req.params.UUID;
+    const isGuest = req.path.startsWith('/guest/') || userId === 'guest';
     const { timestamp, geolocation, warrantyNumber } = req.body;
 
     console.log('🔵 Incoming Scan Request:', { userId, timestamp, warrantyNumber, geolocation });
 
-    if (!userId || !timestamp || !warrantyNumber) {
-      throw new Error('userId, timestamp, and warrantyNumber are required');
+    if (!timestamp || !warrantyNumber) {
+      throw new Error('timestamp and warrantyNumber are required');
+    }
+
+    if (!isGuest && !userId) {
+      throw new Error('userId is required');
     }
 
     const code = warrantyNumber;
@@ -59,6 +65,14 @@ exports.createScan = async (req, res) => {
     //--------------------------------------------------
 
     if (wp) {
+      if (isGuest) {
+        return res.status(403).json({
+          success: false,
+          code: 'WARRANTY_LOGIN_REQUIRED',
+          message: 'Warranty scan requires login'
+        });
+      }
+
       if (wp?.Brand) {
         brandType = wp.Brand;
 
@@ -136,13 +150,30 @@ exports.createScan = async (req, res) => {
 
       scanType = 'lubricant';
 
-      await serial.update({
+      const serialUpdatePayload = {
         status: 'scanned',
-        scanned_by: userId,
         scanned_at: new Date()
-      });
+      };
+      if (!isGuest) {
+        serialUpdatePayload.scanned_by = userId;
+      }
+      await serial.update(serialUpdatePayload);
 
       console.log('🟢 Lubricant QR matched:', { sku, productName, points });
+    }
+
+    if (isGuest && scanType === 'lubricant') {
+      return res.status(200).json({
+        success: true,
+        type: 'lubricant',
+        duplicate: false,
+        message: 'Genuine Product',
+        product: {
+          title: productName,
+          nameArabic: productName
+        },
+        guest: true
+      });
     }
 
     //--------------------------------------------------
@@ -214,6 +245,7 @@ if (scanType === 'lubricant') {
   return res.status(201).json({
     success: true,
     type: "lubricant",
+    duplicate: false,
     message: "Genuine Product",
     product: {
       title: productName,
@@ -247,56 +279,10 @@ return res.status(201).json({
     });
   }
 };
-
-
-
-// GUEST SCAN (NO AUTH) - CHECKS
-// GET /api/v1/guest/scan/:code
-// Public endpoint — no auth required
-exports.guestScan = async (req, res) => {
-  try {
-    const { code } = req.params;
-
-    if (!code) {
-      return res.status(400).json({ success: false, message: 'QR code is required' });
-    }
-
-    const serial = await LubricantSerialCode.findOne({
-      where: { serial_code: code }
-    });
-
-    if (!serial) {
-      return res.status(200).json({
-        success: true,
-        genuine: false,
-        message: 'The product is not genuine'
-      });
-    }
-
-    // Optionally fetch product name to enrich the response
-    const product = await Product.findOne({
-      where: { sku: serial.bsg_code, status: 'Published' }
-    });
-
-    return res.status(200).json({
-      success: true,
-      genuine: true,
-      message: 'Genuine Product',
-      product: {
-        title: product?.title || '',
-        nameArabic: product?.nameArabic || ''
-      }
-    });
-
-  } catch (err) {
-    console.error('❌ guestScan error:', err.message);
-    res.status(500).json({ success: false, message: err.message });
-  }
-};
 // exports.createScan = async (req, res) => {
 //   try {
 //     const userId = req.params.UUID;
-//     const { timestamp, geolocation, warrantyNumber } = req.body; 
+//     const { timestamp, geolocation, warrantyNumber } = req.body;
 
 //     console.log('🔵 Incoming Scan Request:', { userId, timestamp, warrantyNumber, geolocation });
 
@@ -364,7 +350,7 @@ exports.guestScan = async (req, res) => {
 //     });
 //     // ✅ Emit scan created event to admin clients
 //     const io = req.app.get('io');
-    
+
 //  // get owner details (the one who submitted the scan)
 // const owner = await User.findByPk(userId, {
 //   attributes: ['id', 'salesRepId'],
@@ -409,7 +395,7 @@ exports.guestScan = async (req, res) => {
 // exports.createScan = async (req, res) => {
 //   try {
 //     const userId = req.params.UUID;
-//     const { timestamp, geolocation, warrantyNumber } = req.body; 
+//     const { timestamp, geolocation, warrantyNumber } = req.body;
 
 //     console.log('🔵 Incoming Scan Request:', { userId, timestamp, warrantyNumber, geolocation });
 
@@ -466,7 +452,7 @@ exports.guestScan = async (req, res) => {
 //     });
 //     // ✅ Emit scan created event to admin clients
 //     const io = req.app.get('io');
-    
+
 //     io.emit('new_scan', {
 //       userId,
 //       warrantyNumber,
@@ -492,7 +478,7 @@ exports.guestScan = async (req, res) => {
 
 
 /**
- * 
+ *
  * Use the enhanced getAllScans below with Sales Rep scoping
  */
 // src/controllers/v1/warrantyScan.controller.js
@@ -516,7 +502,7 @@ exports.getAllScans = async (req, res) => {
     }];
 
     // 🔒 Sales Rep scope: compare to the code stored on BO/Tech (e.g., "S1")
-    if (req.user.role === 'SALES_REP') {
+    if (req.user?.role === 'SALES_REP') {
       // Prefer embedding the rep code in the JWT as salesRepKey
       let repKey = req.user.salesRepKey;
 
@@ -693,5 +679,76 @@ exports.getUserTotalPoints = async (req, res) => {
   } catch (err) {
     console.error('❌ getUserTotalPoints error:', err.message);
     res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.getLocationStatus = async (req, res) => {
+  try {
+    const { bsg_cust_id: bsgCustId } = req.params;
+    if (!bsgCustId) {
+      return res.status(400).json({ success: false, message: 'bsg_cust_id is required' });
+    }
+
+    const status = await ScanService.getLocationStatus({ bsgCustId });
+    if (!status) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+
+    return res.status(200).json({ success: true, data: status });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.activateCustomerLocation = async (req, res) => {
+  try {
+    const {
+      scanned_bsg_cust_id: scannedBsgCustId,
+      nfc_value: nfcValue,
+      parent_cust_id: parentCustId,
+      rep_lat: repLat,
+      rep_lng: repLng,
+      business_address: businessAddress,
+      task_id: taskId,
+    } = req.body || {};
+
+    const result = await ScanService.activateCustomerLocation({
+      scannedBsgCustId,
+      nfcValue,
+      parentCustId,
+      repLat,
+      repLng,
+      businessAddress,
+      taskId,
+      activatedBy: req.user?.id || null,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: result.alreadyActivated ? 'Location already activated' : 'Location activated successfully',
+      data: result,
+    });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+exports.validateNfcScan = async (req, res) => {
+  try {
+    const { scanned_nfc_value: scannedNfcValue, rep_lat: repLat, rep_lng: repLng } = req.body || {};
+    if (!scannedNfcValue) {
+      return res.status(400).json({ success: false, message: 'scanned_nfc_value is required' });
+    }
+
+    const result = await ScanService.validateNfcScan({
+      scannedNfcValue,
+      repLat,
+      repLng,
+      userId: req.user?.id || null,
+    });
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err.message });
   }
 };
