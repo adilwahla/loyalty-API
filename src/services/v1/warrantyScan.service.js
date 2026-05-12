@@ -1,7 +1,11 @@
 // src/services/v1/warrantyScan.service.js
+<<<<<<< HEAD
 const { WarrantyScan, sequelize, User, UserRole, BrandMaster, TechnicianBusinessOwnerLink, Task } = require('../../models');
 const { Op } = require('sequelize');
 const customerActivationSync = require('./customerActivationTaskSync.service');
+=======
+const { WarrantyScan,sequelize, User,UserRole , BrandMaster ,TechnicianBusinessOwnerLink} = require('../../models');
+>>>>>>> d1df119b784f3f9a83adeacd851406e5f080c6c5
 const { toWarrantyView } = require('../../utils/warrantyTransform');
 const { getWarrantyFromWP } = require('../../utils/getWarrantyFromWP');
 const { emitAnalytics } = require('../../utils/analytics.emit');
@@ -210,6 +214,7 @@ exports.getUserTotalPoints = async (userId) => {
   }, 0);
 
   return { userId, totalPoints, scanCount: scans.length };
+<<<<<<< HEAD
 };
 
 function parseCoordinate(value) {
@@ -522,3 +527,6 @@ exports.validateNfcScan = async ({ scannedNfcValue, repLat, repLng, userId }) =>
     },
   };
 };
+=======
+};
+>>>>>>> d1df119b784f3f9a83adeacd851406e5f080c6c5

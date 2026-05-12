@@ -16,5 +16,8 @@ router.put('/me/accounts/:accountId', authenticate, restrictToRoles('BUSINESS_OW
  
 // DELETE /api/v1/users/me/accounts/:accountId  — delete a non-primary account
 router.delete('/me/accounts/:accountId', authenticate, restrictToRoles('BUSINESS_OWNER'), AccountController.deleteMyAccount);
- 
+
+// Inline uniqueness check — called by the Flutter app while the user types
+router.get( '/accounts/check-customer-id', authenticate, AccountController.checkCustomerId,);
+
 module.exports = router;
