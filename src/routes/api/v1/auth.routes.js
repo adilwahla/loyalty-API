@@ -13,7 +13,7 @@ router.post('/login', controller.loginUser);
 router.post('/forgot-password/send-otp', controller.forgotPasswordSendOtp);
 router.post('/forgot-password/verify-otp', controller.forgotPasswordVerifyOtp);
 router.post('/forgot-password/reset-password', controller.forgotPasswordResetPassword);
-
+router.use('/', require('./salesRep.auth.routes'));
 // Elham-endpoint
 router.post('/login-sales-rep', controller.loginSalesRep);
 

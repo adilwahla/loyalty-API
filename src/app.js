@@ -97,6 +97,8 @@ app.use('/api/v1/mobile', require('./routes/api/v1/mobile/appVersion.routes'));
 
 // Mobile sales-reps endpoint (BO registration dropdown)
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/salesRep.routes'));
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/branchManager.mobile.routes'));
+
 
 app.use('/api/v1/admin/sales-reps', require('./routes/api/v1/admin/salesRep.routes'));
 app.use('/api/v1/admin/branch-managers', require('./routes/api/v1/admin/branchManager.routes'));
