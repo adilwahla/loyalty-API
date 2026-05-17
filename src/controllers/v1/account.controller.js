@@ -73,6 +73,15 @@ exports.createMyAccount = async (req, res, next) => {
     const me = await User.findByPk(req.user.id);
     if (!me) return res.status(404).json({ message: 'User not found' });
 
+    // Primary BO group: existing parent link, else caller's bsgCustId, else body override
+    const primaryParentCustId =
+      (me.parentCustId && String(me.parentCustId).trim()) ||
+      (me.bsgCustId && String(me.bsgCustId).trim()) ||
+      '';
+    const bodyParentCustId =
+      typeof req.body?.parentCustId === 'string' ? req.body.parentCustId.trim() : '';
+    const parentCustId = primaryParentCustId || bodyParentCustId || null;
+
     // ── GLOBALLY unique: any row with this bsgCustId is a conflict ────────────
     const existing = await User.findOne({
       where: { bsgCustId: customerIdStr },
@@ -97,13 +106,14 @@ exports.createMyAccount = async (req, res, next) => {
       isOtpVerified:   true,
       status:          'APPROVED',
       bsgCustId:       customerIdStr,
+      parentCustId,
       groupId:         groupIdNum,
     });
 
     const withGroup = await User.findByPk(account.id, {
       attributes: [
         'id', 'phoneNumber', 'fullName', 'businessName', 'vatNumber',
-        'businessAddress', 'latitude', 'longitude', 'bsgCustId',
+        'businessAddress', 'latitude', 'longitude', 'bsgCustId', 'parentCustId',
         'salesRepId', 'email', 'groupId', 'status', 'createdAt',
       ],
       include: [{
@@ -258,10 +268,11 @@ exports.deleteMyAccount = async (req, res, next) => {
 };
 
 /**
- * GET /api/v1/users/me/accounts/check-customer-id?bsgCustId=X[&excludeId=Y]
- *
- * Inline uniqueness check — globally scoped, matching create/update above.
+ * Customer ID uniqueness check — globally scoped, matching create/update above.
  * Returns { exists: true | false }
+ *
+ * Public (registration): GET /api/v1/mobile/check-customer-id?bsgCustId=X[&excludeId=Y]
+ * Authenticated (Add Account): GET /api/v1/users/me/accounts/check-customer-id?bsgCustId=X[&excludeId=Y]
  */
 exports.checkCustomerId = async (req, res, next) => {
   try {

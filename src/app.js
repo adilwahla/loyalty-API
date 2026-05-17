@@ -92,6 +92,9 @@ app.use('/api/v1/mobile', require('./routes/api/v1/mobile/warrantyRedemption.rou
 // Mobile groups endpoint (BO dropdown for multi-account)
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/group.routes'));
 
+// Public customer-id check (BO registration, before login)
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/checkCustomerId.routes'));
+
 // Mobile app-version endpoint (ForceUpdateChecker)
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/appVersion.routes'));
 
