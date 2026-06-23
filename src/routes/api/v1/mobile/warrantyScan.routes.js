@@ -2,15 +2,19 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../../../../controllers/v1/warrantyScan.controller');
+const { authenticate } = require('../../../../middleware/auth');
 
-router.post('/:UUID/warranty-scan', ctrl.createScan);      // create a scan for a user
-router.get('/:UUID/warranty-scans', ctrl.getUserScans);    // list user scans
-router.get('/:UUID/points', ctrl.getUserTotalPoints);   // ✅ new: accumulated points
+// Location activation (specific paths before /:UUID)
+router.get('/customers/:bsg_cust_id/location-status', authenticate, ctrl.getLocationStatus);
+router.post('/customers/location/activate', authenticate, ctrl.activateCustomerLocation);
+router.post('/nfc/validate-scan', authenticate, ctrl.validateNfcScan);
 
+router.post('/:UUID/warranty-scan', ctrl.createScan);
+router.get('/:UUID/warranty-scans', ctrl.getUserScans);
+router.get('/:UUID/points', ctrl.getUserTotalPoints);
 
-// ✅ Guest scan — no auth, no UUID, read-only
+// Guest scan — no auth, read-only
 router.get('/guest/scan/:code', ctrl.guestScan);
-// quick ping
 router.get('/scan-ping', (_req, res) => res.send('mobile warrantyScan OK'));
 
 module.exports = router;

@@ -1,9 +1,81 @@
 const { Op } = require("sequelize");
 // this is new update for group.
 const { Task, User, TaskReassignHistory, Group, sequelize, Sequelize } = require("../../models");
- 
+const AppError = require("../../utils/appError"); 
 // Valid task type values
 const VALID_TASK_TYPES = ["Collection", "Promotion", "Up/Cross sell"];
+const CREATED_BY_USER_ATTRIBUTES = ["id", "fullName", "email", "role"];
+
+const SYSTEM_CREATOR_USER = {
+  id: null,
+  fullName: "النظام",
+  email: null,
+  role: "SYSTEM",
+};
+
+const CREATED_BY_BODY_KEYS = [
+  "createdById",
+  "created_by_id",
+  "createdByUserId",
+  "created_by_user_id",
+  "createdByUser",
+  "created_by_user",
+  "createdBy",
+  "creator",
+];
+
+function stripCreatedByFromPayload(data) {
+  if (!data || typeof data !== "object") return;
+  CREATED_BY_BODY_KEYS.forEach((key) => {
+    delete data[key];
+  });
+}
+
+function taskIncludes(extra = []) {
+  return [
+    { model: User, as: "user" },
+    {
+      model: User,
+      as: "createdByUser",
+      attributes: CREATED_BY_USER_ATTRIBUTES,
+      required: false,
+    },
+    ...extra,
+  ];
+}
+
+function isActivationTask(task) {
+  const title = (task?.taskTitle || '').toLowerCase().trim();
+  return (
+    title.includes('activate customer location') ||
+    title.includes('تفعيل موقع العميل')
+  );
+}
+
+function formatTaskForApi(task) {
+  if (!task) return task;
+  const json = task.toJSON ? task.toJSON() : { ...task };
+  const { oldUserId, ...rest } = json;
+
+  if (!rest.createdById) {
+    rest.createdById = null;
+    rest.createdByUser = isActivationTask(rest) ? { ...SYSTEM_CREATOR_USER } : null;
+  } else if (rest.createdByUser) {
+    rest.createdByUser = {
+      id: rest.createdByUser.id,
+      fullName: rest.createdByUser.fullName,
+      email: rest.createdByUser.email,
+      role: rest.createdByUser.role,
+    };
+  }
+
+  return rest;
+}
+
+function formatTasksForApi(tasks) {
+  if (!Array.isArray(tasks)) return tasks;
+  return tasks.map(formatTaskForApi);
+}
 
 /** All BO bsg_cust_id values in the same customer group as groupId (for NFC scan matching). */
 function linkedBsgCustIdsForActivationGroup(customers, groupId) {
@@ -22,12 +94,14 @@ function linkedBsgCustIdsForActivationGroup(customers, groupId) {
 }
 
 const ACTIVATION_TASK_TITLE = 'Activate Customer Location';
+const ACTIVATION_TASK_TITLE_AR = 'تفعيل موقع العميل';
+const ACTIVATION_TASK_TITLES = [ACTIVATION_TASK_TITLE, ACTIVATION_TASK_TITLE_AR];
 
 function isActivationPromotionTaskPayload(t) {
   return (
     !!t &&
     !!t.customerId &&
-    String(t.taskTitle || '').trim() === ACTIVATION_TASK_TITLE &&
+    ACTIVATION_TASK_TITLES.includes(String(t.taskTitle || '').trim()) &&
     String(t.taskType || '').trim().toLowerCase() === 'promotion'
   );
 }
@@ -72,7 +146,7 @@ async function loadCustomersForTasks(tasks) {
   const customers = await User.findAll({
     where: {
       role: 'BUSINESS_OWNER',
-      bsgCustId: { [Op.not]: null }
+      bsgCustId: { [Op.in]: customerIds },
     },
     attributes: [
       'id', 'phoneNumber', 'fullName', 'businessName', 'vatNumber',
@@ -89,11 +163,7 @@ async function loadCustomersForTasks(tasks) {
   });
  
   const customerMap = new Map();
-  const parentLocationMap = new Map();
   customers.forEach(customer => {
-    if (customer.parentCustId && customer.latitude != null && customer.longitude != null) {
-      parentLocationMap.set(String(customer.parentCustId).trim(), customer);
-    }
     if (customer.bsgCustId) {
       const key = String(customer.bsgCustId).trim();
       customerMap.set(key, customer);
@@ -114,17 +184,12 @@ async function loadCustomersForTasks(tasks) {
         const taskData = task.toJSON ? task.toJSON() : task;
         const customerData = customer.toJSON ? customer.toJSON() : customer;
  
-        const sharedLocationCustomer = customer.parentCustId
-          ? parentLocationMap.get(String(customer.parentCustId).trim())
-          : null;
-
-        const sourceForLocation = sharedLocationCustomer || customer;
-        const rawLat = sourceForLocation.get
-          ? sourceForLocation.get('latitude')
-          : (sourceForLocation.latitude || sourceForLocation.dataValues?.latitude);
-        const rawLng = sourceForLocation.get
-          ? sourceForLocation.get('longitude')
-          : (sourceForLocation.longitude || sourceForLocation.dataValues?.longitude);
+        const rawLat = customer.get
+          ? customer.get('latitude')
+          : (customer.latitude || customer.dataValues?.latitude);
+        const rawLng = customer.get
+          ? customer.get('longitude')
+          : (customer.longitude || customer.dataValues?.longitude);
  
         customerData.latitude = (rawLat !== undefined && rawLat !== null && rawLat !== 'null' && rawLat !== '') ? String(rawLat) : null;
         customerData.longitude = (rawLng !== undefined && rawLng !== null && rawLng !== 'null' && rawLng !== '') ? String(rawLng) : null;
@@ -132,7 +197,6 @@ async function loadCustomersForTasks(tasks) {
         if (!('latitude' in customerData)) customerData.latitude = null;
         if (!('longitude' in customerData)) customerData.longitude = null;
 
-        // NFC group list for tasks API only (does not toggle warranty/scan behavior — that still uses ENABLE_PARENT_LOCATION_FLOW elsewhere).
         taskData.customer = customerData;
  
         if (process.env.NODE_ENV !== 'production') {
@@ -193,6 +257,54 @@ function validateTaskType(taskType) {
  
   return types.join(',');
 }
+
+function parseStockCount(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed)) return NaN;
+  return parsed;
+}
+
+function normalizeTaskUpdateData(data) {
+  if (!data || typeof data !== 'object') return data;
+  if (data.dateVisit === undefined && data.date_visit !== undefined) {
+    data.dateVisit = data.date_visit;
+  }
+  if (data.nextVisitDate !== undefined && data.dateVisit === undefined) {
+    data.dateVisit = data.nextVisitDate;
+  }
+  if (data.stockCount === undefined && data.stock_count !== undefined) {
+    data.stockCount = data.stock_count;
+  }
+  return data;
+}
+
+function validateTaskCompletion(task, data) {
+  if (data.taskStatus !== 'Completed') return;
+  if (isActivationTask(task)) return;
+
+  const comment = data.comment !== undefined ? data.comment : task.comment;
+  const dateVisit = data.dateVisit !== undefined ? data.dateVisit : task.dateVisit;
+  const stockCountRaw = data.stockCount !== undefined ? data.stockCount : task.stockCount;
+
+  if (!comment || !String(comment).trim()) {
+    throw new AppError('Comment is required when completing a task', 400);
+  }
+
+  if (dateVisit === undefined || dateVisit === null || dateVisit === '') {
+    throw new AppError('Next visit date is required when completing a task', 400);
+  }
+
+  const stockCount = parseStockCount(stockCountRaw);
+  if (stockCount === null) {
+    throw new AppError('Stock count is required when completing a task', 400);
+  }
+  if (Number.isNaN(stockCount) || stockCount < 0) {
+    throw new AppError('Stock count must be a valid number greater than or equal to 0', 400);
+  }
+
+  data.stockCount = stockCount;
+}
  
 class TaskService {
   async getTasksAssignedToUser(userId) {
@@ -200,21 +312,20 @@ class TaskService {
     if (!normalizedUserId) return [];
     const tasks = await Task.findAll({
       where: { userId: normalizedUserId },
-      include: [{ model: User, as: "user" }],
+      include: taskIncludes(),
       order: [["updatedAt", "DESC"], ["dateTime", "DESC"]],
     });
     return await loadCustomersForTasks(tasks);
   }
 
   async getAllTasks() {
-    const tasks = await Task.findAll({ include: [{ model: User, as: "user" }] });
+    const tasks = await Task.findAll({ include: taskIncludes() });
     return await loadCustomersForTasks(tasks);
   }
  
   async getTaskById(id) {
     const task = await Task.findByPk(id, { 
-      include: [
-        { model: User, as: "user" },
+      include: taskIncludes([
         { 
           model: TaskReassignHistory, 
           as: "reassignHistory",
@@ -224,7 +335,7 @@ class TaskService {
           ],
           order: [["changedAt", "DESC"]]
         }
-      ]
+      ])
     });
     if (task) await loadCustomersForTasks([task]);
     return task;
@@ -235,17 +346,17 @@ class TaskService {
   }
  
   async getTasksByCustomer(customerId) {
-    const tasks = await Task.findAll({ where: { customerId }, include: [{ model: User, as: "user" }] });
+    const tasks = await Task.findAll({ where: { customerId }, include: taskIncludes() });
     return await loadCustomersForTasks(tasks);
   }
  
   async getTasksByStatus(taskStatus) {
-    const tasks = await Task.findAll({ where: { taskStatus }, include: [{ model: User, as: "user" }] });
+    const tasks = await Task.findAll({ where: { taskStatus }, include: taskIncludes() });
     return await loadCustomersForTasks(tasks);
   }
  
   async getTasksByPriority(priority) {
-    const tasks = await Task.findAll({ where: { priority }, include: [{ model: User, as: "user" }] });
+    const tasks = await Task.findAll({ where: { priority }, include: taskIncludes() });
     return await loadCustomersForTasks(tasks);
   }
  
@@ -257,32 +368,49 @@ class TaskService {
           { dateTo: { [Op.between]: [startDate, endDate] } },
         ]
       },
-      include: [{ model: User, as: "user" }]
+      include: taskIncludes()
     });
     return await loadCustomersForTasks(tasks);
   }
  
-  async createTask(data) {
-    if (!data.userId) throw new Error("Missing assigned sales rep (userId)");
-    if (!data.customerId) throw new Error("Missing assigned customer (customerId)");
-    if (data.taskType !== undefined) data.taskType = validateTaskType(data.taskType);
+  async createTask(data, creatorUserId = null) {
+    const payload = { ...data };
+    stripCreatedByFromPayload(payload);
+
+    if (!payload.userId) throw new Error("Missing assigned sales rep (userId)");
+    if (!payload.customerId) throw new Error("Missing assigned customer (customerId)");
+    if (payload.taskType !== undefined) payload.taskType = validateTaskType(payload.taskType);
+
+    if (creatorUserId) {
+      payload.createdById = creatorUserId;
+    }
  
-    const task = await Task.create(data);
-    const reloadedTask = await Task.findByPk(task.id, { include: [{ model: User, as: "user" }] });
+    const task = await Task.create(payload);
+    const reloadedTask = await Task.findByPk(task.id, { include: taskIncludes() });
     await loadCustomersForTasks([reloadedTask]);
     return reloadedTask;
   }
  
   async updateTask(id, data) {
-    const task = await Task.findByPk(id, { include: [{ model: User, as: "user" }] });
+    normalizeTaskUpdateData(data);
+    stripCreatedByFromPayload(data);
+    const task = await Task.findByPk(id, { include: taskIncludes() });
     if (!task) return null;
- 
+
     const oldUserId = task.userId;
     if (data.taskType !== undefined) data.taskType = validateTaskType(data.taskType);
+    validateTaskCompletion(task, data);
     if (data.taskStatus === "Completed" && !task.completedAt) data.completedAt = new Date();
- 
+    if (data.stockCount !== undefined && data.taskStatus !== 'Completed') {
+      const stockCount = parseStockCount(data.stockCount);
+      if (data.stockCount !== null && data.stockCount !== '' && (Number.isNaN(stockCount) || stockCount < 0)) {
+        throw new AppError('Stock count must be a valid number greater than or equal to 0', 400);
+      }
+      data.stockCount = stockCount;
+    }
+
     await task.update(data);
-    await task.reload({ include: [{ model: User, as: "user" }] });
+    await task.reload({ include: taskIncludes() });
     await loadCustomersForTasks([task]);
     task.oldUserId = oldUserId;
     return task;
@@ -298,7 +426,7 @@ class TaskService {
   async reassignTask(taskId, newUserId, newEndDate, reason) {
     const transaction = await sequelize.transaction();
     try {
-      const task = await Task.findByPk(taskId, { include: [{ model: User, as: "user" }], transaction });
+      const task = await Task.findByPk(taskId, { include: taskIncludes(), transaction });
       if (!task) throw new Error("Task not found");
  
       const oldUserId = task.userId;
@@ -313,8 +441,7 @@ class TaskService {
       await transaction.commit();
  
       await task.reload({
-        include: [
-          { model: User, as: "user" },
+        include: taskIncludes([
           { 
             model: TaskReassignHistory, 
             as: "reassignHistory",
@@ -324,7 +451,7 @@ class TaskService {
             ],
             order: [["changedAt", "DESC"]]
           }
-        ]
+        ])
       });
  
       await loadCustomersForTasks([task]);
@@ -339,4 +466,7 @@ class TaskService {
 
 const taskService = new TaskService();
 taskService.applyActivationNfcToSerializedTasks = applyActivationNfcToSerializedTasks;
+taskService.isActivationTask = isActivationTask;
+taskService.formatTaskForApi = formatTaskForApi;
+taskService.formatTasksForApi = formatTasksForApi;
 module.exports = taskService;

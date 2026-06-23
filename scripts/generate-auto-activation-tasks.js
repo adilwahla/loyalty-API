@@ -1,7 +1,8 @@
+const { Op } = require('sequelize');
 const { sequelize, Task } = require('../src/models');
 const {
-  syncActivationTaskForCustomerGroup,
-  isParentLocationFlowEnabled,
+  syncActivationTaskForBusinessOwner,
+  ACTIVATION_TASK_TITLES,
 } = require('../src/services/v1/customerActivationTaskSync.service');
 
 async function run() {
@@ -9,46 +10,39 @@ async function run() {
     await sequelize.authenticate();
     console.log('✅ Connected to database');
 
-    if (!isParentLocationFlowEnabled()) {
-      console.log('⚠️ ENABLE_PARENT_LOCATION_FLOW is not true — sync skipped. Set it to true and retry.');
-      process.exit(0);
-    }
-
-    const [groups] = await sequelize.query(`
-      SELECT
-        COALESCE(parent_cust_id, bsg_cust_id) AS group_id
+    const [rows] = await sequelize.query(`
+      SELECT id, bsg_cust_id
       FROM users
       WHERE role = 'BUSINESS_OWNER'
         AND bsg_cust_id IS NOT NULL
-      GROUP BY COALESCE(parent_cust_id, bsg_cust_id)
-      HAVING SUM(CASE WHEN latitude IS NOT NULL AND longitude IS NOT NULL THEN 1 ELSE 0 END) = 0
+        AND (latitude IS NULL OR longitude IS NULL)
     `);
 
     let created = 0;
     let skippedExisting = 0;
     let skippedNoAssignee = 0;
 
-    for (const g of groups) {
-      const groupId = g.group_id;
-      if (!groupId) continue;
+    for (const row of rows) {
+      const bsgCustId = row.bsg_cust_id;
+      if (!bsgCustId) continue;
 
       const existing = await Task.findOne({
         where: {
-          taskTitle: 'Activate Customer Location',
+          taskTitle: { [Op.in]: ACTIVATION_TASK_TITLES },
           taskType: 'Promotion',
           taskStatus: 'Pending',
-          customerId: groupId,
+          customerId: bsgCustId,
         },
       });
 
-      await syncActivationTaskForCustomerGroup(groupId, {});
+      await syncActivationTaskForBusinessOwner(row.id, {});
 
       const after = await Task.findOne({
         where: {
-          taskTitle: 'Activate Customer Location',
+          taskTitle: { [Op.in]: ACTIVATION_TASK_TITLES },
           taskType: 'Promotion',
           taskStatus: 'Pending',
-          customerId: groupId,
+          customerId: bsgCustId,
         },
       });
 
@@ -58,8 +52,8 @@ async function run() {
     }
 
     console.log(`✅ Auto activation tasks created (new): ${created}`);
-    console.log(`ℹ️ Groups already had pending activation task: ${skippedExisting}`);
-    console.log(`ℹ️ Groups with no assignable sales rep (no task): ${skippedNoAssignee}`);
+    console.log(`ℹ️ Customers already had pending activation task: ${skippedExisting}`);
+    console.log(`ℹ️ Customers with no assignable sales rep (no task): ${skippedNoAssignee}`);
     process.exit(0);
   } catch (err) {
     console.error('❌ Failed to generate activation tasks:', err.message);

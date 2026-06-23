@@ -695,3 +695,74 @@ exports.getUserTotalPoints = async (req, res) => {
     res.status(500).json({ success: false, message: err.message });
   }
 };
+
+exports.getLocationStatus = async (req, res) => {
+  try {
+    const { bsg_cust_id: bsgCustId } = req.params;
+    if (!bsgCustId) {
+      return res.status(400).json({ success: false, message: 'bsg_cust_id is required' });
+    }
+
+    const status = await ScanService.getLocationStatus({ bsgCustId });
+    if (!status) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+
+    return res.status(200).json({ success: true, data: status });
+  } catch (err) {
+    return res.status(500).json({ success: false, message: err.message });
+  }
+};
+
+exports.activateCustomerLocation = async (req, res) => {
+  try {
+    const {
+      scanned_bsg_cust_id: scannedBsgCustId,
+      nfc_value: nfcValue,
+      parent_cust_id: parentCustId,
+      rep_lat: repLat,
+      rep_lng: repLng,
+      business_address: businessAddress,
+      task_id: taskId,
+    } = req.body || {};
+
+    const result = await ScanService.activateCustomerLocation({
+      scannedBsgCustId,
+      nfcValue,
+      parentCustId,
+      repLat,
+      repLng,
+      businessAddress,
+      taskId,
+      activatedBy: req.user?.id || null,
+    });
+
+    return res.status(200).json({
+      success: true,
+      message: result.alreadyActivated ? 'Location already activated' : 'Location activated successfully',
+      data: result,
+    });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err.message });
+  }
+};
+
+exports.validateNfcScan = async (req, res) => {
+  try {
+    const { scanned_nfc_value: scannedNfcValue, rep_lat: repLat, rep_lng: repLng } = req.body || {};
+    if (!scannedNfcValue) {
+      return res.status(400).json({ success: false, message: 'scanned_nfc_value is required' });
+    }
+
+    const result = await ScanService.validateNfcScan({
+      scannedNfcValue,
+      repLat,
+      repLng,
+      userId: req.user?.id || null,
+    });
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (err) {
+    return res.status(400).json({ success: false, message: err.message });
+  }
+};

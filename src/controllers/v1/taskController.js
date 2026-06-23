@@ -1,4 +1,5 @@
 const taskService = require("../../services/v1/taskService");
+const { Task } = require("../../models");
 const { success, error } = require("../../utils/response");
 const {
   emitTaskCreated,
@@ -12,7 +13,7 @@ exports.getAllTasks = async (req, res) => {
   try {
     const tasks = await taskService.getAllTasks();
 
-    res.json(success("Tasks fetched successfully", tasks));
+    res.json(success("Tasks fetched successfully", taskService.formatTasksForApi(tasks)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks", err.message));
   }
@@ -24,7 +25,7 @@ exports.getTaskById = async (req, res) => {
     const task = await taskService.getTaskById(req.params.id);
     if (!task) return res.status(404).json(error("Task not found"));
 
-    res.json(success("Task fetched successfully", task));
+    res.json(success("Task fetched successfully", taskService.formatTaskForApi(task)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch task", err.message));
   }
@@ -41,7 +42,7 @@ exports.getMyTasks = async (req, res) => {
 
     const tasks = await taskService.getTaskByUser(userId);
 
-    res.json(success("My tasks fetched successfully", tasks));
+    res.json(success("My tasks fetched successfully", taskService.formatTasksForApi(tasks)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch my tasks", err.message));
   }
@@ -51,7 +52,7 @@ exports.getMyTasks = async (req, res) => {
 exports.getTaskByUser = async (req, res) => {
   try {
     const tasks = await taskService.getTaskByUser(req.params.id);
-    res.json(success("Tasks fetched successfully", tasks));
+    res.json(success("Tasks fetched successfully", taskService.formatTasksForApi(tasks)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by user", err.message));
   }
@@ -61,7 +62,7 @@ exports.getTaskByUser = async (req, res) => {
 exports.getTasksByCustomer = async (req, res) => {
   try {
     const tasks = await taskService.getTasksByCustomer(req.params.customerId);
-    res.json(success("Tasks fetched successfully", tasks));
+    res.json(success("Tasks fetched successfully", taskService.formatTasksForApi(tasks)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by customer", err.message));
   }
@@ -71,7 +72,7 @@ exports.getTasksByCustomer = async (req, res) => {
 exports.getTasksByStatus = async (req, res) => {
   try {
     const tasks = await taskService.getTasksByStatus(req.params.status);
-    res.json(success("Tasks fetched successfully", tasks));
+    res.json(success("Tasks fetched successfully", taskService.formatTasksForApi(tasks)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by status", err.message));
   }
@@ -81,7 +82,7 @@ exports.getTasksByStatus = async (req, res) => {
 exports.getTasksByPriority = async (req, res) => {
   try {
     const tasks = await taskService.getTasksByPriority(req.params.priority);
-    res.json(success("Tasks fetched successfully", tasks));
+    res.json(success("Tasks fetched successfully", taskService.formatTasksForApi(tasks)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by priority", err.message));
   }
@@ -98,7 +99,7 @@ exports.getTasksByDateRange = async (req, res) => {
 
     const tasks = await taskService.getTasksByDateRange(startDate, endDate);
 
-    res.json(success("Tasks fetched successfully", tasks));
+    res.json(success("Tasks fetched successfully", taskService.formatTasksForApi(tasks)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks by date range", err.message));
   }
@@ -107,12 +108,13 @@ exports.getTasksByDateRange = async (req, res) => {
 // ✅ Create task
 exports.createTask = async (req, res) => {
   try {
-    const task = await taskService.createTask(req.body);
+    const creatorUserId = req.user?.id || null;
+    const task = await taskService.createTask(req.body, creatorUserId);
 
     const io = req.app.get("io");
     if (io) emitTaskCreated(io, task);
 
-    res.status(201).json(success("Task created successfully", task));
+    res.status(201).json(success("Task created successfully", taskService.formatTaskForApi(task)));
   } catch (err) {
     res.status(500).json(error("Failed to create task", err.message));
   }
@@ -121,6 +123,25 @@ exports.createTask = async (req, res) => {
 // ✅ Update task
 exports.updateTask = async (req, res) => {
   try {
+    const { taskStatus, comment, stockCount, dateVisit } = req.body || {};
+
+    if (taskStatus === 'Completed') {
+      const existing = await Task.findByPk(req.params.id);
+      if (!existing) return res.status(404).json(error("Task not found"));
+
+      if (!taskService.isActivationTask(existing)) {
+        if (!comment?.trim()) {
+          return res.status(400).json(error('Comment is required when completing a task'));
+        }
+        if (stockCount === undefined || stockCount === null || Number(stockCount) < 0) {
+          return res.status(400).json(error('Stock count is required when completing a task'));
+        }
+        if (!dateVisit) {
+          return res.status(400).json(error('Next visit date is required when completing a task'));
+        }
+      }
+    }
+
     const task = await taskService.updateTask(req.params.id, req.body);
     if (!task) return res.status(404).json(error("Task not found"));
 
@@ -136,12 +157,13 @@ exports.updateTask = async (req, res) => {
       }
     }
 
-    const taskData = task.toJSON ? task.toJSON() : task;
-    const { oldUserId, ...taskResponse } = taskData;
+    const taskData = taskService.formatTaskForApi(task);
 
-    res.json(success("Task updated successfully", taskResponse));
+    res.json(success("Task updated successfully", taskData));
   } catch (err) {
-    res.status(500).json(error("Failed to update task", err.message));
+    const status = err.statusCode || 500;
+    const message = status === 500 ? "Failed to update task" : err.message;
+    res.status(status).json(error(message, status === 500 ? err.message : null));
   }
 };
 
@@ -163,10 +185,9 @@ exports.reassignTask = async (req, res) => {
       emitTaskAssigned(io, task, task.oldUserId);
     }
 
-    const taskData = task.toJSON ? task.toJSON() : task;
-    const { oldUserId, ...taskResponse } = taskData;
+    const taskData = taskService.formatTaskForApi(task);
 
-    res.json(success("Task reassigned successfully", taskResponse));
+    res.json(success("Task reassigned successfully", taskData));
   } catch (err) {
     res.status(500).json(error("Failed to reassign task", err.message));
   }

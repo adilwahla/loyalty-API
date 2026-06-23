@@ -1,52 +1,57 @@
 const { Op } = require('sequelize');
 const { User, Task, sequelize } = require('../../models');
 
-function isParentLocationFlowEnabled() {
-  return String(process.env.ENABLE_PARENT_LOCATION_FLOW || 'false').toLowerCase() === 'true';
+const ACTIVATION_TASK_TITLE = 'تفعيل موقع العميل';
+const ACTIVATION_TASK_TITLE_LEGACY = 'Activate Customer Location';
+const ACTIVATION_TASK_TITLES = [ACTIVATION_TASK_TITLE, ACTIVATION_TASK_TITLE_LEGACY];
+
+function activationTaskTitleWhere() {
+  return { [Op.in]: ACTIVATION_TASK_TITLES };
 }
 
-function groupKeyFromBoRow(row) {
-  if (!row) return null;
-  return row.parentCustId || row.bsgCustId || null;
-}
-
-async function loadGroupBoRows(groupId, transaction) {
-  if (!groupId) return [];
-  return User.findAll({
+async function findBranchManagerUserByCode(code, transaction) {
+  const trimmed = String(code || '').trim();
+  if (!trimmed) return null;
+  const row = await User.findOne({
     where: {
-      role: 'BUSINESS_OWNER',
-      [Op.or]: [{ parentCustId: groupId }, { bsgCustId: groupId }],
+      role: 'BRANCH_MANAGER',
+      [Op.or]: [{ salesRepId: trimmed }, { branchManagerId: trimmed }],
     },
-    attributes: ['id', 'salesRepId', 'latitude', 'longitude', 'bsgCustId', 'parentCustId'],
+    attributes: ['id'],
     transaction,
   });
+  return row?.id || null;
 }
 
-function groupHasLocation(rows) {
-  return rows.some((r) => r.latitude != null && r.longitude != null);
-}
-
-async function resolveActivationTaskAssignee({ groupRows, fallbackUserId, transaction }) {
-  const repCode = groupRows.find((r) => r.salesRepId)?.salesRepId;
-  if (repCode) {
+async function resolveActivationTaskAssignee(boRow, fallbackUserId, transaction) {
+  if (boRow?.salesRepId) {
     const salesRepUser = await User.findOne({
-      where: { role: 'SALES_REP', salesRepId: repCode },
+      where: { role: 'SALES_REP', salesRepId: boRow.salesRepId },
       attributes: ['id'],
       transaction,
     });
     if (salesRepUser?.id) return salesRepUser.id;
+
+    const branchManagerFromRepCode = await findBranchManagerUserByCode(boRow.salesRepId, transaction);
+    if (branchManagerFromRepCode) return branchManagerFromRepCode;
   }
+
+  if (boRow?.branchManagerId) {
+    const branchManagerUser = await findBranchManagerUserByCode(boRow.branchManagerId, transaction);
+    if (branchManagerUser) return branchManagerUser;
+  }
+
   return fallbackUserId || null;
 }
 
-async function ensureActivationTaskForParent({ parentCustId, userId, transaction }) {
-  if (!parentCustId || !userId) return null;
+async function ensureActivationTaskForCustomer({ bsgCustId, customerName, userId, transaction }) {
+  if (!bsgCustId || !userId) return null;
 
   const existing = await Task.findOne({
     where: {
-      customerId: parentCustId,
+      customerId: bsgCustId,
       taskType: 'Promotion',
-      taskTitle: 'Activate Customer Location',
+      taskTitle: activationTaskTitleWhere(),
       taskStatus: 'Pending',
     },
     transaction,
@@ -56,21 +61,21 @@ async function ensureActivationTaskForParent({ parentCustId, userId, transaction
   return Task.create(
     {
       userId,
-      taskTitle: 'Activate Customer Location',
+      taskTitle: ACTIVATION_TASK_TITLE,
       taskType: 'Promotion',
       priority: 'High',
-      customerId: parentCustId,
-      customerName: parentCustId,
+      customerId: bsgCustId,
+      customerName: customerName || bsgCustId,
       taskStatus: 'Pending',
       dateTime: new Date(),
-      description: 'Auto-generated task for customer group first-time location activation.',
+      description: 'Auto-generated task for customer first-time location activation.',
     },
     { transaction }
   );
 }
 
-async function completePendingActivationTasksForGroup(groupId, transaction) {
-  if (!groupId) return;
+async function completePendingActivationTasksForBsgCustId(bsgCustId, transaction) {
+  if (!bsgCustId) return;
   await Task.update(
     {
       taskStatus: 'Completed',
@@ -79,8 +84,8 @@ async function completePendingActivationTasksForGroup(groupId, transaction) {
     },
     {
       where: {
-        customerId: groupId,
-        taskTitle: 'Activate Customer Location',
+        customerId: bsgCustId,
+        taskTitle: activationTaskTitleWhere(),
         taskStatus: 'Pending',
       },
       transaction,
@@ -88,43 +93,41 @@ async function completePendingActivationTasksForGroup(groupId, transaction) {
   );
 }
 
+function boHasLocation(bo) {
+  return bo?.latitude != null && bo?.longitude != null;
+}
+
 /**
- * One pending "Activate Customer Location" per customer group (customerId = group key).
- * Creates task when group has no lat/lng; completes pending when group gains location.
- * @param {string} groupId
+ * One pending activation task per BO (customerId = bsg_cust_id).
+ * Creates task when that BO has no lat/lng; completes pending when that BO gains location.
+ * @param {string} boUserId
  * @param {{ fallbackUserId?: string|null, transaction?: object }} [opts]
  */
-async function syncActivationTaskForCustomerGroup(groupId, opts = {}) {
-  if (!isParentLocationFlowEnabled() || !groupId) return;
+async function syncActivationTaskForBusinessOwner(boUserId, opts = {}) {
+  if (!boUserId) return;
 
   const { fallbackUserId = null, transaction: outerTx } = opts;
 
   const run = async (transaction) => {
-    const lockedRows = await User.findAll({
-      where: {
-        role: 'BUSINESS_OWNER',
-        [Op.or]: [{ parentCustId: groupId }, { bsgCustId: groupId }],
-      },
+    const bo = await User.findOne({
+      where: { id: boUserId, role: 'BUSINESS_OWNER' },
       lock: transaction.LOCK.UPDATE,
       transaction,
     });
 
-    if (!lockedRows.length) return;
+    if (!bo?.bsgCustId) return;
 
-    if (groupHasLocation(lockedRows)) {
-      await completePendingActivationTasksForGroup(groupId, transaction);
+    if (boHasLocation(bo)) {
+      await completePendingActivationTasksForBsgCustId(bo.bsgCustId, transaction);
       return;
     }
 
-    const assignee = await resolveActivationTaskAssignee({
-      groupRows: lockedRows,
-      fallbackUserId,
-      transaction,
-    });
+    const assignee = await resolveActivationTaskAssignee(bo, fallbackUserId, transaction);
     if (!assignee) return;
 
-    await ensureActivationTaskForParent({
-      parentCustId: groupId,
+    await ensureActivationTaskForCustomer({
+      bsgCustId: bo.bsgCustId,
+      customerName: bo.businessName || bo.fullName || bo.bsgCustId,
       userId: assignee,
       transaction,
     });
@@ -139,26 +142,64 @@ async function syncActivationTaskForCustomerGroup(groupId, opts = {}) {
 }
 
 async function syncAfterBusinessOwnerPersist(userId) {
-  if (!isParentLocationFlowEnabled() || !userId) return;
+  if (!userId) return;
 
   const user = await User.findByPk(userId, {
-    attributes: ['id', 'role', 'bsgCustId', 'parentCustId'],
+    attributes: ['id', 'role'],
   });
   if (!user || String(user.role || '').toUpperCase() !== 'BUSINESS_OWNER') return;
 
-  const groupId = groupKeyFromBoRow(user);
-  if (!groupId) return;
+  await syncActivationTaskForBusinessOwner(userId, { fallbackUserId: null });
+}
 
-  await syncActivationTaskForCustomerGroup(groupId, { fallbackUserId: null });
+/** Back-compat alias — syncs activation task for one BO (by user id or bsg_cust_id). */
+async function syncActivationTaskForCustomerGroup(customerKey, opts = {}) {
+  if (!customerKey) return;
+
+  const { fallbackUserId = null, transaction: outerTx } = opts;
+
+  const run = async (transaction) => {
+    const bo =
+      (await User.findOne({
+        where: { id: customerKey, role: 'BUSINESS_OWNER' },
+        attributes: ['id'],
+        transaction,
+      })) ||
+      (await User.findOne({
+        where: { bsgCustId: customerKey, role: 'BUSINESS_OWNER' },
+        attributes: ['id'],
+        transaction,
+      }));
+
+    if (!bo?.id) return;
+    await syncActivationTaskForBusinessOwner(bo.id, { fallbackUserId, transaction });
+  };
+
+  if (outerTx) {
+    await run(outerTx);
+    return;
+  }
+
+  return sequelize.transaction(run);
+}
+
+/** Back-compat alias — completes only the given customerId (bsg_cust_id). */
+async function completePendingActivationTasksForGroup(customerId, transaction) {
+  await completePendingActivationTasksForBsgCustId(customerId, transaction);
 }
 
 module.exports = {
-  isParentLocationFlowEnabled,
+  ACTIVATION_TASK_TITLE,
+  ACTIVATION_TASK_TITLE_LEGACY,
+  ACTIVATION_TASK_TITLES,
   resolveActivationTaskAssignee,
-  ensureActivationTaskForParent,
+  ensureActivationTaskForCustomer,
+  ensureActivationTaskForParent: ensureActivationTaskForCustomer,
+  completePendingActivationTasksForBsgCustId,
   completePendingActivationTasksForGroup,
+  syncActivationTaskForBusinessOwner,
   syncActivationTaskForCustomerGroup,
   syncAfterBusinessOwnerPersist,
-  loadGroupBoRows,
-  groupHasLocation,
+  boHasLocation,
 };
+

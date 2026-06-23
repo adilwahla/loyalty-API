@@ -15,6 +15,11 @@ const Task = sequelize.define(
     },
     // task_history:{ type: DataTypes.JSON, allowNull: true, field: 'task_history' },
     userId: { type: DataTypes.UUID, allowNull: false, field: 'user_id'},
+    createdById: {
+      type: DataTypes.UUID,
+      allowNull: true,
+      field: 'created_by_id',
+    },
     taskTitle: {
       type: DataTypes.STRING(255),
       allowNull: true
@@ -65,6 +70,11 @@ const Task = sequelize.define(
      comment: {
       type: DataTypes.STRING(1000),
       allowNull: true
+    },
+    stockCount: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: 'stock_count',
     },
     description: {
       type: DataTypes.TEXT,

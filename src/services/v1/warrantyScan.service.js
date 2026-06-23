@@ -1,5 +1,7 @@
 // src/services/v1/warrantyScan.service.js
-const { WarrantyScan, sequelize, User, UserRole, BrandMaster, TechnicianBusinessOwnerLink } = require('../../models');
+const { WarrantyScan, sequelize, User, UserRole, BrandMaster, TechnicianBusinessOwnerLink, Task } = require('../../models');
+const { Op } = require('sequelize');
+const customerActivationSync = require('./customerActivationTaskSync.service');
 const { toWarrantyView } = require('../../utils/warrantyTransform');
 const { getWarrantyFromWP } = require('../../utils/getWarrantyFromWP');
 const { emitAnalytics } = require('../../utils/analytics.emit');
@@ -208,4 +210,257 @@ exports.getUserTotalPoints = async (userId) => {
   }, 0);
 
   return { userId, totalPoints, scanCount: scans.length };
+};
+
+function parseCoordinate(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isParentLocationFlowEnabled() {
+  return String(process.env.ENABLE_PARENT_LOCATION_FLOW || 'false').toLowerCase() === 'true';
+}
+
+function toRad(v) {
+  return (v * Math.PI) / 180;
+}
+
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+async function resolveBusinessOwnerByBsgCustId({ scannedBsgCustId, nfcValue, transaction, lock }) {
+  const lookup = scannedBsgCustId || nfcValue;
+  if (!lookup) return null;
+
+  return User.findOne({
+    where: {
+      role: 'BUSINESS_OWNER',
+      bsgCustId: lookup,
+    },
+    transaction,
+    ...(lock ? { lock } : {}),
+  });
+}
+
+exports.getLocationStatus = async ({ bsgCustId }) => {
+  const customer = await User.findOne({
+    where: { role: 'BUSINESS_OWNER', bsgCustId },
+    attributes: ['bsgCustId', 'parentCustId', 'latitude', 'longitude', 'businessAddress'],
+  });
+  if (!customer) return null;
+
+  const hasLocation = customer.latitude != null && customer.longitude != null;
+  return {
+    bsgCustId,
+    parentCustId: customer.parentCustId || null,
+    isLocationActivated: hasLocation,
+    activatedAt: null,
+    latitude: customer.latitude ?? null,
+    longitude: customer.longitude ?? null,
+    mode: 'legacy',
+  };
+};
+
+async function completeActivationTask({ taskId, bsgCustId, transaction }) {
+  if (taskId) {
+    await Task.update(
+      { taskStatus: 'Completed', completedAt: new Date(), updatedAt: new Date() },
+      { where: { id: taskId }, transaction }
+    );
+  }
+
+  await customerActivationSync.completePendingActivationTasksForBsgCustId(bsgCustId, transaction);
+}
+
+async function loadCompletedActivationTask({ taskId, bsgCustId, transaction }) {
+  if (taskId) {
+    return Task.findByPk(taskId, { transaction });
+  }
+  if (!bsgCustId) return null;
+  return Task.findOne({
+    where: {
+      customerId: bsgCustId,
+      taskStatus: 'Completed',
+      taskTitle: { [Op.in]: customerActivationSync.ACTIVATION_TASK_TITLES },
+    },
+    order: [['completedAt', 'DESC']],
+    transaction,
+  });
+}
+
+exports.activateCustomerLocation = async ({
+  scannedBsgCustId,
+  nfcValue,
+  repLat,
+  repLng,
+  businessAddress,
+  taskId,
+  activatedBy,
+}) => {
+  const latitude = parseCoordinate(repLat);
+  const longitude = parseCoordinate(repLng);
+  if (latitude == null || longitude == null) {
+    throw new Error('rep_lat and rep_lng are required and must be valid numbers');
+  }
+
+  return sequelize.transaction(async (transaction) => {
+    const customer = await resolveBusinessOwnerByBsgCustId({
+      scannedBsgCustId,
+      nfcValue,
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!customer) throw new Error('Customer not found for provided identifier');
+    if (!customer.bsgCustId) throw new Error('Customer does not have bsg_cust_id');
+
+    const alreadyActivated = customer.latitude != null && customer.longitude != null;
+    if (alreadyActivated) {
+      await completeActivationTask({
+        taskId,
+        bsgCustId: customer.bsgCustId,
+        transaction,
+      });
+
+      return {
+        alreadyActivated: true,
+        bsgCustId: customer.bsgCustId,
+        parentCustId: customer.parentCustId || null,
+        latitude: customer.latitude,
+        longitude: customer.longitude,
+        activatedAt: null,
+        activatedBy: null,
+        taskStatus: 'Completed',
+        taskCompleted: true,
+        taskId: taskId || null,
+      };
+    }
+
+    const updates = { latitude, longitude };
+    if (businessAddress !== undefined) updates.businessAddress = businessAddress;
+
+    await customer.update(updates, { transaction });
+
+    await completeActivationTask({
+      taskId,
+      bsgCustId: customer.bsgCustId,
+      transaction,
+    });
+
+    return {
+      alreadyActivated: false,
+      bsgCustId: customer.bsgCustId,
+      parentCustId: customer.parentCustId || null,
+      businessAddress: businessAddress !== undefined ? businessAddress : customer.businessAddress || null,
+      latitude,
+      longitude,
+      activatedBy: activatedBy || null,
+      taskStatus: 'Completed',
+      taskCompleted: true,
+      taskId: taskId || null,
+    };
+  });
+};
+
+exports.loadCompletedActivationTask = loadCompletedActivationTask;
+
+exports.validateNfcScan = async ({ scannedNfcValue, repLat, repLng, userId, taskId }) => {
+  const parentFlowEnabled = isParentLocationFlowEnabled();
+  const latitude = parseCoordinate(repLat);
+  const longitude = parseCoordinate(repLng);
+  if (latitude == null || longitude == null) {
+    throw new Error('rep_lat and rep_lng are required and must be valid numbers');
+  }
+
+  const customer = await resolveBusinessOwnerByBsgCustId({ nfcValue: scannedNfcValue });
+  if (!customer) throw new Error('Scanned NFC value does not map to a customer');
+
+  const bsgCustId = customer.bsgCustId;
+  const parentCustId = customer.parentCustId || customer.bsgCustId;
+
+  if (!parentFlowEnabled) {
+    await sequelize.transaction(async (transaction) => {
+      await completeActivationTask({ taskId, bsgCustId, transaction });
+    });
+
+    return {
+      allowed: true,
+      reason: 'LEGACY_FLOW',
+      bsgCustId,
+      parentCustId,
+      enforceDistance: false,
+      maxDistanceMeters: 50,
+      mode: 'legacy',
+      taskStatus: 'Completed',
+      taskCompleted: true,
+      taskId: taskId || null,
+    };
+  }
+
+  const hasLocation = customer.latitude != null && customer.longitude != null;
+
+  if (!hasLocation) {
+    await sequelize.transaction(async (transaction) => {
+      const lockedCustomer = await User.findByPk(customer.id, {
+        lock: transaction.LOCK.UPDATE,
+        transaction,
+      });
+      const activatedInTx =
+        lockedCustomer?.latitude != null && lockedCustomer?.longitude != null;
+      if (!activatedInTx) {
+        await customerActivationSync.syncActivationTaskForBusinessOwner(customer.id, {
+          fallbackUserId: userId,
+          transaction,
+        });
+      }
+    });
+
+    return {
+      allowed: true,
+      reason: 'NOT_ACTIVATED',
+      bsgCustId,
+      parentCustId,
+      enforceDistance: false,
+      maxDistanceMeters: 50,
+    };
+  }
+
+  const distance = distanceMeters(
+    Number(customer.latitude),
+    Number(customer.longitude),
+    latitude,
+    longitude
+  );
+
+  const allowed = distance <= 50;
+
+  if (allowed) {
+    await sequelize.transaction(async (transaction) => {
+      await completeActivationTask({ taskId, bsgCustId, transaction });
+    });
+  }
+
+  return {
+    allowed,
+    reason: allowed ? 'WITHIN_RADIUS' : 'OUT_OF_RADIUS',
+    bsgCustId,
+    parentCustId,
+    enforceDistance: true,
+    distanceMeters: Number(distance.toFixed(2)),
+    maxDistanceMeters: 50,
+    targetLocation: {
+      latitude: Number(customer.latitude),
+      longitude: Number(customer.longitude),
+    },
+    taskStatus: allowed ? 'Completed' : undefined,
+    taskCompleted: allowed,
+    taskId: allowed ? (taskId || null) : null,
+  };
 };

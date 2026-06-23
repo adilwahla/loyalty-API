@@ -85,6 +85,7 @@ Role.hasMany(User, { foreignKey: 'role', sourceKey: 'name', as: 'roleUsers' });
 // ELHAM: Tasks
 User.hasMany(Task, { foreignKey: "userId", as: "tasks" });
 Task.belongsTo(User, { foreignKey: "userId", as: "user" });
+Task.belongsTo(User, { foreignKey: "createdById", as: "createdByUser" });
  
 // TaskReassignHistory associations
 TaskReassignHistory.belongsTo(Task, { foreignKey: "taskId", as: "task" });
