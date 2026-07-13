@@ -719,6 +719,7 @@ exports.activateCustomerLocation = async (req, res) => {
     const {
       scanned_bsg_cust_id: scannedBsgCustId,
       nfc_value: nfcValue,
+      nfc_serial_number: nfcSerialNumber,   // ← NEW
       parent_cust_id: parentCustId,
       rep_lat: repLat,
       rep_lng: repLng,
@@ -729,6 +730,7 @@ exports.activateCustomerLocation = async (req, res) => {
     const result = await ScanService.activateCustomerLocation({
       scannedBsgCustId,
       nfcValue,
+      nfcSerialNumber,   // ← NEW
       parentCustId,
       repLat,
       repLng,
@@ -749,20 +751,27 @@ exports.activateCustomerLocation = async (req, res) => {
 
 exports.validateNfcScan = async (req, res) => {
   try {
-    const { scanned_nfc_value: scannedNfcValue, rep_lat: repLat, rep_lng: repLng } = req.body || {};
+    const {
+       scanned_nfc_value: scannedNfcValue, 
+         nfc_serial_number: nfcSerialNumber,   // ← NEW
+        rep_lat: repLat,
+         rep_lng: repLng 
+        } = req.body || {};
     if (!scannedNfcValue) {
       return res.status(400).json({ success: false, message: 'scanned_nfc_value is required' });
     }
 
     const result = await ScanService.validateNfcScan({
       scannedNfcValue,
+      nfcSerialNumber,   // ← NEW
       repLat,
       repLng,
       userId: req.user?.id || null,
     });
 
     return res.status(200).json({ success: true, data: result });
-  } catch (err) {
-    return res.status(400).json({ success: false, message: err.message });
-  }
+} catch (err) {
+  const status = err.http || 400;
+  return res.status(status).json({ success: false, message: err.message });
+}
 };

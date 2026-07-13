@@ -250,6 +250,33 @@ async function resolveBusinessOwnerByBsgCustId({ scannedBsgCustId, nfcValue, tra
   });
 }
 
+/**
+ * Enrolls (first scan, no serial on file) or verifies (serial already on file) the
+ * physical tag's hardware serial number against the customer record.
+ * Must run inside the same transaction/lock as the rest of the activation logic.
+ */
+async function verifyOrEnrollNfcSerialNumber({ customer, scannedSerial, transaction }) {
+  if (!scannedSerial) return; // no serial sent — old app version, skip silently for now
+
+  const serial = String(scannedSerial).trim().toUpperCase();
+  const storedSerial = customer.nfcSerialNumber
+    ? String(customer.nfcSerialNumber).trim().toUpperCase()
+    : null;
+
+  if (!storedSerial) {
+    await customer.update({ nfcSerialNumber: serial }, { transaction });
+    return;
+  }
+
+  if (storedSerial !== serial) {
+    const err = new Error('This tag does not match the tag registered for this customer.');
+    err.code = 'NFC_SERIAL_MISMATCH';
+    err.http = 409;
+    throw err;
+  }
+}
+
+
 exports.getLocationStatus = async ({ bsgCustId }) => {
   const customer = await User.findOne({
     where: { role: 'BUSINESS_OWNER', bsgCustId },
@@ -299,6 +326,7 @@ async function loadCompletedActivationTask({ taskId, bsgCustId, transaction }) {
 exports.activateCustomerLocation = async ({
   scannedBsgCustId,
   nfcValue,
+  nfcSerialNumber,        // ← NEW param
   repLat,
   repLng,
   businessAddress,
@@ -320,6 +348,10 @@ exports.activateCustomerLocation = async ({
     });
     if (!customer) throw new Error('Customer not found for provided identifier');
     if (!customer.bsgCustId) throw new Error('Customer does not have bsg_cust_id');
+
+ // ← NEW: enroll-or-verify happens right after we lock the row, before anything else
+    await verifyOrEnrollNfcSerialNumber({ customer, scannedSerial: nfcSerialNumber, transaction });
+
 
     const alreadyActivated = customer.latitude != null && customer.longitude != null;
     if (alreadyActivated) {
@@ -371,7 +403,7 @@ exports.activateCustomerLocation = async ({
 
 exports.loadCompletedActivationTask = loadCompletedActivationTask;
 
-exports.validateNfcScan = async ({ scannedNfcValue, repLat, repLng, userId, taskId }) => {
+exports.validateNfcScan = async ({ scannedNfcValue, nfcSerialNumber, repLat, repLng, userId, taskId }) => {
   const parentFlowEnabled = isParentLocationFlowEnabled();
   const latitude = parseCoordinate(repLat);
   const longitude = parseCoordinate(repLng);
@@ -381,6 +413,13 @@ exports.validateNfcScan = async ({ scannedNfcValue, repLat, repLng, userId, task
 
   const customer = await resolveBusinessOwnerByBsgCustId({ nfcValue: scannedNfcValue });
   if (!customer) throw new Error('Scanned NFC value does not map to a customer');
+
+ // ← NEW: lock + enroll/verify before anything else
+  await sequelize.transaction(async (transaction) => {
+    const locked = await User.findByPk(customer.id, { lock: transaction.LOCK.UPDATE, transaction });
+    await verifyOrEnrollNfcSerialNumber({ customer: locked, scannedSerial: nfcSerialNumber, transaction });
+  });
+
 
   const bsgCustId = customer.bsgCustId;
   const parentCustId = customer.parentCustId || customer.bsgCustId;

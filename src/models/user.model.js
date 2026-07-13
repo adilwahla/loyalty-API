@@ -123,7 +123,12 @@ groupId: {
   type: DataTypes.INTEGER,
    allowNull: true,
     field: 'groupId' 
-  }
+  },
+  nfcSerialNumber: {
+  type: DataTypes.STRING(32),
+  allowNull: true,
+  field: 'nfc_serial_number',
+}
   }, {
     tableName: 'users',
     timestamps: true,
