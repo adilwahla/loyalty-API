@@ -36,8 +36,8 @@ async function run() {
                 completedAt = NOW(),
                 updated_at = NOW()
             WHERE customerId COLLATE utf8mb4_unicode_ci = p_group_id COLLATE utf8mb4_unicode_ci
-              AND taskTitle = 'Activate Customer Location'
-              AND taskType = 'Promotion'
+              AND taskTitle IN ('Activate Customer Location', 'تفعيل موقع العميل')
+              AND taskType IN ('Customer Activation', 'Promotion')
               AND taskStatus = 'Pending';
           ELSE
             SET v_rep_code = p_fallback_rep_code;
@@ -70,8 +70,8 @@ async function run() {
                    SELECT 1
                    FROM tasks t
                    WHERE t.customerId COLLATE utf8mb4_unicode_ci = p_group_id COLLATE utf8mb4_unicode_ci
-                     AND t.taskTitle = 'Activate Customer Location'
-                     AND t.taskType = 'Promotion'
+                     AND t.taskTitle IN ('Activate Customer Location', 'تفعيل موقع العميل')
+                     AND t.taskType IN ('Customer Activation', 'Promotion')
                      AND t.taskStatus = 'Pending'
                  ) THEN
                 INSERT INTO tasks (
@@ -89,7 +89,7 @@ async function run() {
                   UUID(),
                   v_assignee_user_id,
                   'Activate Customer Location',
-                  'Promotion',
+                  'Customer Activation',
                   'High',
                   p_group_id,
                   p_group_id,

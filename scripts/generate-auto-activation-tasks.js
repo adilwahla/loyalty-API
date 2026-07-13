@@ -3,6 +3,7 @@ const { sequelize, Task } = require('../src/models');
 const {
   syncActivationTaskForBusinessOwner,
   ACTIVATION_TASK_TITLES,
+  ACTIVATION_TASK_TYPES,
 } = require('../src/services/v1/customerActivationTaskSync.service');
 
 async function run() {
@@ -29,7 +30,7 @@ async function run() {
       const existing = await Task.findOne({
         where: {
           taskTitle: { [Op.in]: ACTIVATION_TASK_TITLES },
-          taskType: 'Promotion',
+          taskType: { [Op.in]: ACTIVATION_TASK_TYPES },
           taskStatus: 'Pending',
           customerId: bsgCustId,
         },
@@ -40,7 +41,7 @@ async function run() {
       const after = await Task.findOne({
         where: {
           taskTitle: { [Op.in]: ACTIVATION_TASK_TITLES },
-          taskType: 'Promotion',
+          taskType: { [Op.in]: ACTIVATION_TASK_TYPES },
           taskStatus: 'Pending',
           customerId: bsgCustId,
         },
@@ -54,6 +55,16 @@ async function run() {
     console.log(`✅ Auto activation tasks created (new): ${created}`);
     console.log(`ℹ️ Customers already had pending activation task: ${skippedExisting}`);
     console.log(`ℹ️ Customers with no assignable sales rep (no task): ${skippedNoAssignee}`);
+
+    const [, syncMeta] = await sequelize.query(`
+      UPDATE tasks t
+      INNER JOIN users u ON u.id = t.user_id
+      SET t.sales_rep_id = u.sales_rep_id
+      WHERE u.sales_rep_id IS NOT NULL
+        AND (t.sales_rep_id IS NULL OR t.sales_rep_id <> u.sales_rep_id)
+    `);
+    console.log(`✅ Tasks sales_rep_id synced from assignee: ${syncMeta?.affectedRows ?? 0}`);
+
     process.exit(0);
   } catch (err) {
     console.error('❌ Failed to generate activation tasks:', err.message);

@@ -15,6 +15,11 @@ const Task = sequelize.define(
     },
     // task_history:{ type: DataTypes.JSON, allowNull: true, field: 'task_history' },
     userId: { type: DataTypes.UUID, allowNull: false, field: 'user_id'},
+    salesRepId: {
+      type: DataTypes.STRING(10),
+      allowNull: true,
+      field: 'sales_rep_id',
+    },
     createdById: {
       type: DataTypes.UUID,
       allowNull: true,

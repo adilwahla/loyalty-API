@@ -4,9 +4,21 @@ const { User, Task, sequelize } = require('../../models');
 const ACTIVATION_TASK_TITLE = 'تفعيل موقع العميل';
 const ACTIVATION_TASK_TITLE_LEGACY = 'Activate Customer Location';
 const ACTIVATION_TASK_TITLES = [ACTIVATION_TASK_TITLE, ACTIVATION_TASK_TITLE_LEGACY];
+const ACTIVATION_TASK_TYPE = 'Customer Activation';
+const ACTIVATION_TASK_TYPE_LEGACY = 'Promotion';
+const ACTIVATION_TASK_TYPES = [ACTIVATION_TASK_TYPE, ACTIVATION_TASK_TYPE_LEGACY];
 
 function activationTaskTitleWhere() {
   return { [Op.in]: ACTIVATION_TASK_TITLES };
+}
+
+function activationTaskTypeWhere() {
+  return { [Op.in]: ACTIVATION_TASK_TYPES };
+}
+
+function isActivationTaskType(taskType) {
+  const normalized = String(taskType || '').trim().toLowerCase();
+  return normalized === 'customer activation' || normalized === 'promotion';
 }
 
 async function findBranchManagerUserByCode(code, transaction) {
@@ -44,13 +56,13 @@ async function resolveActivationTaskAssignee(boRow, fallbackUserId, transaction)
   return fallbackUserId || null;
 }
 
-async function ensureActivationTaskForCustomer({ bsgCustId, customerName, userId, transaction }) {
+async function ensureActivationTaskForCustomer({ bsgCustId, customerName, userId, salesRepId, transaction }) {
   if (!bsgCustId || !userId) return null;
 
   const existing = await Task.findOne({
     where: {
       customerId: bsgCustId,
-      taskType: 'Promotion',
+      taskType: activationTaskTypeWhere(),
       taskTitle: activationTaskTitleWhere(),
       taskStatus: 'Pending',
     },
@@ -58,11 +70,24 @@ async function ensureActivationTaskForCustomer({ bsgCustId, customerName, userId
   });
   if (existing) return existing;
 
+  let resolvedSalesRepId = salesRepId || null;
+  if (!resolvedSalesRepId) {
+    const assignee = await User.findByPk(userId, {
+      attributes: ['salesRepId', 'branchManagerId'],
+      transaction,
+    });
+    resolvedSalesRepId =
+      (assignee?.salesRepId && String(assignee.salesRepId).trim()) ||
+      (assignee?.branchManagerId && String(assignee.branchManagerId).trim()) ||
+      null;
+  }
+
   return Task.create(
     {
       userId,
+      salesRepId: resolvedSalesRepId,
       taskTitle: ACTIVATION_TASK_TITLE,
-      taskType: 'Promotion',
+      taskType: ACTIVATION_TASK_TYPE,
       priority: 'High',
       customerId: bsgCustId,
       customerName: customerName || bsgCustId,
@@ -192,6 +217,10 @@ module.exports = {
   ACTIVATION_TASK_TITLE,
   ACTIVATION_TASK_TITLE_LEGACY,
   ACTIVATION_TASK_TITLES,
+  ACTIVATION_TASK_TYPE,
+  ACTIVATION_TASK_TYPE_LEGACY,
+  ACTIVATION_TASK_TYPES,
+  isActivationTaskType,
   resolveActivationTaskAssignee,
   ensureActivationTaskForCustomer,
   ensureActivationTaskForParent: ensureActivationTaskForCustomer,

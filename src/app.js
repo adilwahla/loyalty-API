@@ -101,6 +101,7 @@ app.use('/api/v1/mobile', require('./routes/api/v1/mobile/appVersion.routes'));
 // Mobile sales-reps endpoint (BO registration dropdown)
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/salesRep.routes'));
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/branchManager.mobile.routes'));
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/task.routes'));
 
 
 app.use('/api/v1/admin/sales-reps', require('./routes/api/v1/admin/salesRep.routes'));
@@ -154,6 +155,7 @@ const taskRoutes = require("./routes/api/v1/taskRoutes");
 
 
 app.use("/api/v1/tasks", taskRoutes);
+app.use('/api/v1/admin/task-types', require('./routes/api/v1/admin/taskType.routes'));
 
 // ✅ RBAC Routes (Roles, Duties, Privileges)
 app.use('/api/v1/admin/rbac', require('./routes/api/v1/admin/rbac.routes'));

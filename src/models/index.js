@@ -15,6 +15,7 @@ const SalesRepModel = require('./salesRep.model');
 const BranchManagerModel = require('./branchManager.model');
 const Task = require("./task");
 const TaskReassignHistory = require("./taskReassignHistory.model");
+const TaskType = require("./taskType.model");
 // this is new update for group.
 const GroupModel = require("./group.model");
  
@@ -131,6 +132,7 @@ module.exports = {
   UsedQrNonce,
   Task,
   TaskReassignHistory,
+  TaskType,
   Group,
   // RBAC
   Role,

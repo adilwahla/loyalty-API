@@ -1,9 +1,12 @@
 const { Op } = require("sequelize");
 // this is new update for group.
 const { Task, User, TaskReassignHistory, Group, sequelize, Sequelize } = require("../../models");
-const AppError = require("../../utils/appError"); 
-// Valid task type values
-const VALID_TASK_TYPES = ["Collection", "Promotion", "Up/Cross sell"];
+const AppError = require("../../utils/appError");
+const { getSelectableTaskTypeCodes } = require("./taskType.service");
+const {
+  ACTIVATION_TASK_TITLES,
+  isActivationTaskType,
+} = require("./customerActivationTaskSync.service");
 const CREATED_BY_USER_ATTRIBUTES = ["id", "fullName", "email", "role"];
 
 const SYSTEM_CREATOR_USER = {
@@ -12,6 +15,12 @@ const SYSTEM_CREATOR_USER = {
   email: null,
   role: "SYSTEM",
 };
+
+const RANDOM_VISIT_TASK_TITLE = "زيارة عشوائية";
+const RANDOM_VISIT_TASK_TYPE = "Random Visit";
+const RANDOM_VISIT_DESCRIPTION =
+  "تم إنشاء مهمة عشوائية للعميل من قبل المندوب";
+const RANDOM_VISIT_PRIORITY = "Low";
 
 const CREATED_BY_BODY_KEYS = [
   "createdById",
@@ -29,6 +38,68 @@ function stripCreatedByFromPayload(data) {
   CREATED_BY_BODY_KEYS.forEach((key) => {
     delete data[key];
   });
+}
+
+/**
+ * Resolve assignee for a task from salesRepId and/or userId.
+ * Priority: userId (UUID) if present, else salesRepId / branchManager code.
+ * Always returns { userId, salesRepId } — userId is required for FK + sockets.
+ */
+async function resolveTaskAssignee({ userId, salesRepId, branchManagerId } = {}, transaction = null) {
+  const explicitUserId = userId ? String(userId).trim() : null;
+  const repCode = salesRepId ? String(salesRepId).trim() : null;
+  const bmCode = branchManagerId ? String(branchManagerId).trim() : null;
+
+  if (explicitUserId) {
+    const user = await User.findByPk(explicitUserId, {
+      attributes: ['id', 'salesRepId', 'branchManagerId', 'role'],
+      transaction,
+    });
+    if (!user) throw new AppError('Assigned user not found', 400);
+    const code =
+      (user.salesRepId && String(user.salesRepId).trim()) ||
+      (user.branchManagerId && String(user.branchManagerId).trim()) ||
+      repCode ||
+      null;
+    return { userId: user.id, salesRepId: code };
+  }
+
+  const code = repCode || bmCode;
+  if (!code) {
+    throw new AppError('Missing assigned sales rep (provide salesRepId or userId)', 400);
+  }
+
+  const salesRepUser = await User.findOne({
+    where: { role: 'SALES_REP', salesRepId: code },
+    attributes: ['id', 'salesRepId'],
+    transaction,
+  });
+  if (salesRepUser?.id) {
+    return {
+      userId: salesRepUser.id,
+      salesRepId: salesRepUser.salesRepId || code,
+    };
+  }
+
+  const branchManagerUser = await User.findOne({
+    where: {
+      role: 'BRANCH_MANAGER',
+      [Op.or]: [{ salesRepId: code }, { branchManagerId: code }],
+    },
+    attributes: ['id', 'salesRepId', 'branchManagerId'],
+    transaction,
+  });
+  if (branchManagerUser?.id) {
+    return {
+      userId: branchManagerUser.id,
+      salesRepId:
+        (branchManagerUser.salesRepId && String(branchManagerUser.salesRepId).trim()) ||
+        (branchManagerUser.branchManagerId && String(branchManagerUser.branchManagerId).trim()) ||
+        code,
+    };
+  }
+
+  throw new AppError(`No sales rep or branch manager found for code: ${code}`, 400);
 }
 
 function taskIncludes(extra = []) {
@@ -77,6 +148,156 @@ function formatTasksForApi(tasks) {
   return tasks.map(formatTaskForApi);
 }
 
+function todayDateOnly() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+async function resolveBusinessOwnerByNfc(nfcValue) {
+  const lookup = String(nfcValue || "").trim();
+  if (!lookup) return null;
+  return User.findOne({
+    where: { role: "BUSINESS_OWNER", bsgCustId: lookup },
+    attributes: [
+      "id",
+      "bsgCustId",
+      "fullName",
+      "businessName",
+      "businessAddress",
+      "latitude",
+      "longitude",
+      "salesRepId",
+      "branchManagerId",
+    ],
+  });
+}
+
+function customerDisplayName(bo) {
+  return bo?.fullName || bo?.businessName || bo?.bsgCustId || null;
+}
+
+function formatRandomVisitCustomer(bo) {
+  const latitude = bo?.latitude ?? null;
+  const longitude = bo?.longitude ?? null;
+  const businessAddress = bo?.businessAddress ?? null;
+
+  return {
+    id: bo.bsgCustId,
+    bsgCustId: bo.bsgCustId,
+    name: customerDisplayName(bo),
+    fullName: bo.fullName || null,
+    businessName: bo.businessName || null,
+    userId: bo.id,
+    latitude,
+    longitude,
+    businessAddress,
+    location: businessAddress,
+  };
+}
+
+function resolveLocationFromCustomerRecord(bo) {
+  if (!bo) return null;
+  const address = bo.businessAddress ? String(bo.businessAddress).trim() : "";
+  if (address) return address;
+  if (bo.latitude != null && bo.longitude != null) {
+    return `${bo.latitude},${bo.longitude}`;
+  }
+  return null;
+}
+
+async function resolveTaskLocationFromCustomer(customerId) {
+  const lookup = String(customerId || "").trim();
+  if (!lookup) return null;
+
+  const bo = await User.findOne({
+    where: { role: "BUSINESS_OWNER", bsgCustId: lookup },
+    attributes: ["businessAddress", "latitude", "longitude"],
+  });
+
+  return resolveLocationFromCustomerRecord(bo);
+}
+
+function isRandomVisitTask(task) {
+  return String(task?.taskType || "").trim() === RANDOM_VISIT_TASK_TYPE;
+}
+
+function validateRandomVisitCompletionPayload({ comment, stockCount, dateVisit }) {
+  if (!comment || !String(comment).trim()) {
+    throw new AppError("Comment is required when completing a task", 400);
+  }
+  if (dateVisit === undefined || dateVisit === null || dateVisit === "") {
+    throw new AppError("Next visit date is required when completing a task", 400);
+  }
+
+  const parsedStockCount = parseStockCount(stockCount);
+  if (parsedStockCount === null) {
+    throw new AppError("Stock count is required when completing a task", 400);
+  }
+  if (Number.isNaN(parsedStockCount) || parsedStockCount < 0) {
+    throw new AppError("Stock count must be a valid number greater than or equal to 0", 400);
+  }
+
+  return {
+    comment: String(comment).trim(),
+    dateVisit,
+    stockCount: parsedStockCount,
+  };
+}
+
+async function prepareRandomVisitContext({ nfcValue, creatorUserId }) {
+  const normalizedNfc = String(nfcValue || "").trim();
+  if (!normalizedNfc) {
+    throw new AppError("nfc_value is required", 400);
+  }
+  if (!creatorUserId) {
+    throw new AppError("Unauthorized: user not found", 401);
+  }
+
+  const customer = await resolveBusinessOwnerByNfc(normalizedNfc);
+  if (!customer?.bsgCustId) {
+    throw new AppError("Scanned NFC value does not map to a customer", 404);
+  }
+
+  const repUser = await User.findByPk(creatorUserId, {
+    attributes: ["id", "salesRepId", "branchManagerId", "role"],
+  });
+  if (!repUser) {
+    throw new AppError("Unauthorized: user not found", 401);
+  }
+
+  await assertRepLinkedToCustomer(repUser, customer);
+  const assignee = await resolveTaskAssignee({ userId: creatorUserId });
+
+  return { customer, assignee };
+}
+
+async function assertRepLinkedToCustomer(repUser, customer) {
+  if (!repUser?.id || !customer) {
+    throw new AppError("Customer not found", 404);
+  }
+
+  const repCode =
+    (repUser.salesRepId && String(repUser.salesRepId).trim()) ||
+    (repUser.branchManagerId && String(repUser.branchManagerId).trim()) ||
+    null;
+
+  if (!repCode) {
+    throw new AppError("Sales rep profile is missing an assignee code", 400);
+  }
+
+  const customerRep = customer.salesRepId ? String(customer.salesRepId).trim() : "";
+  const customerBm = customer.branchManagerId
+    ? String(customer.branchManagerId).trim()
+    : "";
+
+  const linked =
+    (customerRep && customerRep === repCode) ||
+    (customerBm && customerBm === repCode);
+
+  if (!linked) {
+    throw new AppError("This customer is not linked to your sales account", 403);
+  }
+}
+
 /** All BO bsg_cust_id values in the same customer group as groupId (for NFC scan matching). */
 function linkedBsgCustIdsForActivationGroup(customers, groupId) {
   if (!groupId || !customers?.length) return [];
@@ -93,16 +314,12 @@ function linkedBsgCustIdsForActivationGroup(customers, groupId) {
   return [...out];
 }
 
-const ACTIVATION_TASK_TITLE = 'Activate Customer Location';
-const ACTIVATION_TASK_TITLE_AR = 'تفعيل موقع العميل';
-const ACTIVATION_TASK_TITLES = [ACTIVATION_TASK_TITLE, ACTIVATION_TASK_TITLE_AR];
-
-function isActivationPromotionTaskPayload(t) {
+function isActivationLocationTaskPayload(t) {
   return (
     !!t &&
     !!t.customerId &&
     ACTIVATION_TASK_TITLES.includes(String(t.taskTitle || '').trim()) &&
-    String(t.taskType || '').trim().toLowerCase() === 'promotion'
+    isActivationTaskType(t.taskType)
   );
 }
 
@@ -112,7 +329,7 @@ function isActivationPromotionTaskPayload(t) {
  */
 async function applyActivationNfcToSerializedTasks(serializedTasks) {
   if (!Array.isArray(serializedTasks) || !serializedTasks.length) return;
-  const needs = serializedTasks.some((t) => isActivationPromotionTaskPayload(t));
+  const needs = serializedTasks.some((t) => isActivationLocationTaskPayload(t));
   if (!needs) return;
 
   const customers = await User.findAll({
@@ -124,7 +341,7 @@ async function applyActivationNfcToSerializedTasks(serializedTasks) {
   });
 
   serializedTasks.forEach((t) => {
-    if (!isActivationPromotionTaskPayload(t)) return;
+    if (!isActivationLocationTaskPayload(t)) return;
     const linked = linkedBsgCustIdsForActivationGroup(customers, t.customerId);
     if (!linked.length) return;
     const gk = String(t.customerId).trim();
@@ -242,19 +459,20 @@ async function loadCustomersForTasks(tasks) {
 * @param {string} taskType
 * @returns {string}
 */
-function validateTaskType(taskType) {
+async function validateTaskType(taskType) {
   if (!taskType) return null;
- 
+
   const types = taskType.split(',').map(t => t.trim()).filter(t => t.length > 0);
   if (types.length === 0) return null;
- 
-  const invalidTypes = types.filter(type => !VALID_TASK_TYPES.includes(type));
+
+  const validTypes = await getSelectableTaskTypeCodes();
+  const invalidTypes = types.filter(type => !validTypes.includes(type));
   if (invalidTypes.length > 0) {
     throw new Error(
-      `Invalid task type(s): ${invalidTypes.join(', ')}. Valid values are: ${VALID_TASK_TYPES.join(', ')}`
+      `Invalid task type(s): ${invalidTypes.join(', ')}. Valid values are: ${validTypes.join(', ')}`
     );
   }
- 
+
   return types.join(',');
 }
 
@@ -377,9 +595,17 @@ class TaskService {
     const payload = { ...data };
     stripCreatedByFromPayload(payload);
 
-    if (!payload.userId) throw new Error("Missing assigned sales rep (userId)");
     if (!payload.customerId) throw new Error("Missing assigned customer (customerId)");
-    if (payload.taskType !== undefined) payload.taskType = validateTaskType(payload.taskType);
+    if (payload.taskType !== undefined) payload.taskType = await validateTaskType(payload.taskType);
+
+    const assignee = await resolveTaskAssignee({
+      userId: payload.userId,
+      salesRepId: payload.salesRepId,
+      branchManagerId: payload.branchManagerId,
+    });
+    payload.userId = assignee.userId;
+    payload.salesRepId = assignee.salesRepId;
+    delete payload.branchManagerId;
 
     if (creatorUserId) {
       payload.createdById = creatorUserId;
@@ -398,15 +624,49 @@ class TaskService {
     if (!task) return null;
 
     const oldUserId = task.userId;
-    if (data.taskType !== undefined) data.taskType = validateTaskType(data.taskType);
+    if (data.taskType !== undefined) data.taskType = await validateTaskType(data.taskType);
     validateTaskCompletion(task, data);
     if (data.taskStatus === "Completed" && !task.completedAt) data.completedAt = new Date();
+
+    const locationProvided =
+      data.location !== undefined &&
+      data.location !== null &&
+      String(data.location).trim() !== "";
+    const taskLocationEmpty =
+      !task.location || String(task.location).trim() === "";
+
+    if (
+      data.taskStatus === "Completed" &&
+      !locationProvided &&
+      taskLocationEmpty &&
+      task.customerId
+    ) {
+      const resolvedLocation = await resolveTaskLocationFromCustomer(task.customerId);
+      if (resolvedLocation) data.location = resolvedLocation;
+    }
+
+    if (data.taskStatus === "Completed") {
+      data.updatedAt = new Date();
+    }
+
     if (data.stockCount !== undefined && data.taskStatus !== 'Completed') {
       const stockCount = parseStockCount(data.stockCount);
       if (data.stockCount !== null && data.stockCount !== '' && (Number.isNaN(stockCount) || stockCount < 0)) {
         throw new AppError('Stock count must be a valid number greater than or equal to 0', 400);
       }
       data.stockCount = stockCount;
+    }
+
+    // Keep userId + salesRepId in sync when either assignee field changes
+    if (data.userId !== undefined || data.salesRepId !== undefined || data.branchManagerId !== undefined) {
+      const assignee = await resolveTaskAssignee({
+        userId: data.userId !== undefined ? data.userId : undefined,
+        salesRepId: data.salesRepId !== undefined ? data.salesRepId : undefined,
+        branchManagerId: data.branchManagerId,
+      });
+      data.userId = assignee.userId;
+      data.salesRepId = assignee.salesRepId;
+      delete data.branchManagerId;
     }
 
     await task.update(data);
@@ -423,27 +683,136 @@ class TaskService {
     return true;
   }
  
-  async reassignTask(taskId, newUserId, newEndDate, reason) {
+  async resolveRandomVisitCustomerFromNfc({ nfcValue, creatorUserId }) {
+    const { customer } = await prepareRandomVisitContext({ nfcValue, creatorUserId });
+    return {
+      customer: formatRandomVisitCustomer(customer),
+    };
+  }
+
+  async completeRandomVisitFromNfc({
+    nfcValue,
+    creatorUserId,
+    comment,
+    stockCount,
+    dateVisit,
+  }) {
+    const { customer, assignee } = await prepareRandomVisitContext({
+      nfcValue,
+      creatorUserId,
+    });
+
+    const completion = validateRandomVisitCompletionPayload({
+      comment,
+      stockCount,
+      dateVisit,
+    });
+
+    const visitDate = todayDateOnly();
+    const customerName = customerDisplayName(customer);
+    const customerLocation = resolveLocationFromCustomerRecord(customer);
+    const now = new Date();
+
+    const task = await Task.create({
+      userId: assignee.userId,
+      salesRepId: assignee.salesRepId,
+      createdById: creatorUserId,
+      taskTitle: RANDOM_VISIT_TASK_TITLE,
+      taskType: RANDOM_VISIT_TASK_TYPE,
+      priority: RANDOM_VISIT_PRIORITY,
+      customerId: customer.bsgCustId,
+      customerName,
+      location: customerLocation,
+      taskStatus: "Completed",
+      dateFrom: visitDate,
+      dateTo: visitDate,
+      dateTime: now,
+      completedAt: now,
+      updatedAt: now,
+      description: RANDOM_VISIT_DESCRIPTION,
+      comment: completion.comment,
+      stockCount: completion.stockCount,
+      dateVisit: completion.dateVisit,
+    });
+
+    const reloadedTask = await Task.findByPk(task.id, { include: taskIncludes() });
+    await loadCustomersForTasks([reloadedTask]);
+
+    return {
+      customer: formatRandomVisitCustomer(customer),
+      task: reloadedTask,
+    };
+  }
+
+  async cancelRandomVisitTask({ taskId, userId }) {
+    const normalizedTaskId = String(taskId || "").trim();
+    const normalizedUserId = String(userId || "").trim();
+    if (!normalizedTaskId) {
+      throw new AppError("Task id is required", 400);
+    }
+    if (!normalizedUserId) {
+      throw new AppError("Unauthorized: user not found", 401);
+    }
+
+    const task = await Task.findByPk(normalizedTaskId);
+    if (!task) {
+      throw new AppError("Task not found", 404);
+    }
+    if (!isRandomVisitTask(task)) {
+      throw new AppError("Only random visit tasks can be cancelled this way", 400);
+    }
+    if (task.taskStatus !== "Pending") {
+      throw new AppError("Only pending random visit tasks can be cancelled", 400);
+    }
+    if (String(task.userId) !== normalizedUserId) {
+      throw new AppError("You can only cancel your own random visit tasks", 403);
+    }
+
+    await task.destroy();
+    return true;
+  }
+
+  async reassignTask(taskId, { newUserId, newSalesRepId, newEndDate, reason } = {}) {
     const transaction = await sequelize.transaction();
     try {
       const task = await Task.findByPk(taskId, { include: taskIncludes(), transaction });
       if (!task) throw new Error("Task not found");
- 
+
+      const assignee = await resolveTaskAssignee(
+        { userId: newUserId, salesRepId: newSalesRepId },
+        transaction
+      );
+
       const oldUserId = task.userId;
-      if (oldUserId === newUserId) throw new Error("Cannot reassign task to the same user");
- 
-      const newUser = await User.findByPk(newUserId, { transaction });
-      if (!newUser) throw new Error("New user not found");
- 
-      await task.update({ userId: newUserId, dateTo: newEndDate, updatedAt: new Date() }, { transaction });
- 
-      await TaskReassignHistory.create({ taskId, oldUserId, newUserId, newEndDate, reason, changedAt: new Date() }, { transaction });
+      if (oldUserId === assignee.userId) throw new Error("Cannot reassign task to the same user");
+
+      await task.update(
+        {
+          userId: assignee.userId,
+          salesRepId: assignee.salesRepId,
+          dateTo: newEndDate,
+          updatedAt: new Date(),
+        },
+        { transaction }
+      );
+
+      await TaskReassignHistory.create(
+        {
+          taskId,
+          oldUserId,
+          newUserId: assignee.userId,
+          newEndDate,
+          reason,
+          changedAt: new Date(),
+        },
+        { transaction }
+      );
       await transaction.commit();
- 
+
       await task.reload({
         include: taskIncludes([
-          { 
-            model: TaskReassignHistory, 
+          {
+            model: TaskReassignHistory,
             as: "reassignHistory",
             include: [
               { model: User, as: "oldUser", attributes: ["id", "fullName", "phoneNumber"] },
@@ -453,7 +822,7 @@ class TaskService {
           }
         ])
       });
- 
+
       await loadCustomersForTasks([task]);
       task.oldUserId = oldUserId;
       return task;
@@ -469,4 +838,7 @@ taskService.applyActivationNfcToSerializedTasks = applyActivationNfcToSerialized
 taskService.isActivationTask = isActivationTask;
 taskService.formatTaskForApi = formatTaskForApi;
 taskService.formatTasksForApi = formatTasksForApi;
+taskService.isRandomVisitTask = isRandomVisitTask;
+taskService.RANDOM_VISIT_TASK_TITLE = RANDOM_VISIT_TASK_TITLE;
+taskService.RANDOM_VISIT_TASK_TYPE = RANDOM_VISIT_TASK_TYPE;
 module.exports = taskService;

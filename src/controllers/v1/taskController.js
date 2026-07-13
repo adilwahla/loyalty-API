@@ -8,6 +8,14 @@ const {
   emitTaskAssigned
 } = require("../../utils/taskEvents");
 
+function resolveTaskId(req) {
+  const fromParams = String(req.params.id || "").trim();
+  if (fromParams) return fromParams;
+  const fromBody = req.body?.id ?? req.body?.taskId ?? req.body?.task_id;
+  const normalized = String(fromBody || "").trim();
+  return normalized || null;
+}
+
 // ✅ Get all tasks
 exports.getAllTasks = async (req, res) => {
   try {
@@ -105,6 +113,75 @@ exports.getTasksByDateRange = async (req, res) => {
   }
 };
 
+// ✅ Resolve customer from NFC scan (random visit — no task saved yet)
+exports.createRandomVisit = async (req, res) => {
+  try {
+    const creatorUserId = req.user?.id || null;
+    const nfcValue =
+      req.body?.nfc_value ?? req.body?.nfcValue ?? req.body?.scanned_nfc_value;
+
+    const result = await taskService.resolveRandomVisitCustomerFromNfc({
+      nfcValue,
+      creatorUserId,
+    });
+
+    res.json(success("Customer resolved successfully", result));
+  } catch (err) {
+    const status = err.statusCode || 500;
+    const message = status === 500 ? "Failed to resolve customer from NFC scan" : err.message;
+    res.status(status).json(error(message, status === 500 ? err.message : null));
+  }
+};
+
+// ✅ Complete random visit — task is saved only when the rep submits completion
+exports.completeRandomVisit = async (req, res) => {
+  try {
+    const creatorUserId = req.user?.id || null;
+    const nfcValue =
+      req.body?.nfc_value ?? req.body?.nfcValue ?? req.body?.scanned_nfc_value;
+    const { comment, stockCount, dateVisit, date_visit, nextVisitDate } = req.body || {};
+
+    const result = await taskService.completeRandomVisitFromNfc({
+      nfcValue,
+      creatorUserId,
+      comment,
+      stockCount,
+      dateVisit: dateVisit ?? date_visit ?? nextVisitDate,
+    });
+
+    const io = req.app.get("io");
+    if (io) emitTaskCompleted(io, result.task);
+
+    const formattedTask = taskService.formatTaskForApi(result.task);
+    res.status(201).json(
+      success("Random visit task completed successfully", {
+        ...formattedTask,
+        customer: result.customer,
+        task: formattedTask,
+      })
+    );
+  } catch (err) {
+    const status = err.statusCode || 500;
+    const message = status === 500 ? "Failed to complete random visit task" : err.message;
+    res.status(status).json(error(message, status === 500 ? err.message : null));
+  }
+};
+
+// ✅ Cancel a pending random visit task (legacy flow / if task was created before submit)
+exports.cancelRandomVisit = async (req, res) => {
+  try {
+    const userId = req.user?.id || null;
+    const taskId = req.params.id ?? req.body?.id ?? req.body?.taskId;
+
+    await taskService.cancelRandomVisitTask({ taskId, userId });
+    res.json(success("Random visit task cancelled successfully"));
+  } catch (err) {
+    const status = err.statusCode || 500;
+    const message = status === 500 ? "Failed to cancel random visit task" : err.message;
+    res.status(status).json(error(message, status === 500 ? err.message : null));
+  }
+};
+
 // ✅ Create task
 exports.createTask = async (req, res) => {
   try {
@@ -116,17 +193,24 @@ exports.createTask = async (req, res) => {
 
     res.status(201).json(success("Task created successfully", taskService.formatTaskForApi(task)));
   } catch (err) {
-    res.status(500).json(error("Failed to create task", err.message));
+    const status = err.statusCode || 500;
+    const message = status === 500 ? "Failed to create task" : err.message;
+    res.status(status).json(error(message, status === 500 ? err.message : null));
   }
 };
 
 // ✅ Update task
 exports.updateTask = async (req, res) => {
   try {
+    const taskId = resolveTaskId(req);
+    if (!taskId) {
+      return res.status(400).json(error("Task id is required"));
+    }
+
     const { taskStatus, comment, stockCount, dateVisit } = req.body || {};
 
     if (taskStatus === 'Completed') {
-      const existing = await Task.findByPk(req.params.id);
+      const existing = await Task.findByPk(taskId);
       if (!existing) return res.status(404).json(error("Task not found"));
 
       if (!taskService.isActivationTask(existing)) {
@@ -142,7 +226,7 @@ exports.updateTask = async (req, res) => {
       }
     }
 
-    const task = await taskService.updateTask(req.params.id, req.body);
+    const task = await taskService.updateTask(taskId, req.body);
     if (!task) return res.status(404).json(error("Task not found"));
 
     const io = req.app.get("io");
@@ -171,12 +255,20 @@ exports.updateTask = async (req, res) => {
 exports.reassignTask = async (req, res) => {
   try {
     const { id } = req.params;
-    const { newUserId, newEndDate, reason } = req.body;
+    const { newUserId, newSalesRepId, salesRepId, newEndDate, reason } = req.body;
 
-    if (!newUserId) return res.status(400).json(error("Missing newUserId"));
+    const repCode = newSalesRepId || salesRepId;
+    if (!newUserId && !repCode) {
+      return res.status(400).json(error("Missing newUserId or newSalesRepId"));
+    }
     if (!newEndDate) return res.status(400).json(error("Missing newEndDate"));
 
-    const task = await taskService.reassignTask(id, newUserId, newEndDate, reason);
+    const task = await taskService.reassignTask(id, {
+      newUserId,
+      newSalesRepId: repCode,
+      newEndDate,
+      reason,
+    });
     if (!task) return res.status(404).json(error("Task not found"));
 
     const io = req.app.get("io");
@@ -189,7 +281,9 @@ exports.reassignTask = async (req, res) => {
 
     res.json(success("Task reassigned successfully", taskData));
   } catch (err) {
-    res.status(500).json(error("Failed to reassign task", err.message));
+    const status = err.statusCode || 500;
+    const message = status === 500 ? "Failed to reassign task" : err.message;
+    res.status(status).json(error(message, status === 500 ? err.message : null));
   }
 };
 
