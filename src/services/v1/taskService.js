@@ -3,6 +3,7 @@ const { Op } = require("sequelize");
 const { Task, User, TaskReassignHistory, Group, sequelize, Sequelize } = require("../../models");
 const AppError = require("../../utils/appError");
 const { getSelectableTaskTypeCodes } = require("./taskType.service");
+const { verifyOrEnrollNfcSerialNumber } = require("../../utils/nfcSerial.util");
 const {
   ACTIVATION_TASK_TITLES,
   isActivationTaskType,
@@ -167,6 +168,7 @@ async function resolveBusinessOwnerByNfc(nfcValue) {
       "longitude",
       "salesRepId",
       "branchManagerId",
+      "nfcSerialNumber", // ← NEW
     ],
   });
 }
@@ -243,7 +245,7 @@ function validateRandomVisitCompletionPayload({ comment, stockCount, dateVisit }
   };
 }
 
-async function prepareRandomVisitContext({ nfcValue, creatorUserId }) {
+async function prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUserId }) {
   const normalizedNfc = String(nfcValue || "").trim();
   if (!normalizedNfc) {
     throw new AppError("nfc_value is required", 400);
@@ -252,17 +254,26 @@ async function prepareRandomVisitContext({ nfcValue, creatorUserId }) {
     throw new AppError("Unauthorized: user not found", 401);
   }
 
-  const customer = await resolveBusinessOwnerByNfc(normalizedNfc);
-  if (!customer?.bsgCustId) {
-    throw new AppError("Scanned NFC value does not map to a customer", 404);
-  }
-
   const repUser = await User.findByPk(creatorUserId, {
     attributes: ["id", "salesRepId", "branchManagerId", "role"],
   });
   if (!repUser) {
     throw new AppError("Unauthorized: user not found", 401);
   }
+
+  const customer = await sequelize.transaction(async (transaction) => {
+    const found = await resolveBusinessOwnerByNfc(normalizedNfc, {
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!found?.bsgCustId) {
+      throw new AppError("Scanned NFC value does not map to a customer", 404);
+    }
+
+    await verifyOrEnrollNfcSerialNumber({ customer: found, scannedSerial: nfcSerialNumber, transaction });
+
+    return found;
+  });
 
   await assertRepLinkedToCustomer(repUser, customer);
   const assignee = await resolveTaskAssignee({ userId: creatorUserId });
@@ -683,24 +694,26 @@ class TaskService {
     return true;
   }
  
-  async resolveRandomVisitCustomerFromNfc({ nfcValue, creatorUserId }) {
-    const { customer } = await prepareRandomVisitContext({ nfcValue, creatorUserId });
-    return {
-      customer: formatRandomVisitCustomer(customer),
-    };
-  }
+async resolveRandomVisitCustomerFromNfc({ nfcValue, nfcSerialNumber, creatorUserId }) {
+  const { customer } = await prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUserId });
+  return {
+    customer: formatRandomVisitCustomer(customer),
+  };
+}
 
-  async completeRandomVisitFromNfc({
+async completeRandomVisitFromNfc({
+  nfcValue,
+  nfcSerialNumber,
+  creatorUserId,
+  comment,
+  stockCount,
+  dateVisit,
+}) {
+  const { customer, assignee } = await prepareRandomVisitContext({
     nfcValue,
+    nfcSerialNumber,
     creatorUserId,
-    comment,
-    stockCount,
-    dateVisit,
-  }) {
-    const { customer, assignee } = await prepareRandomVisitContext({
-      nfcValue,
-      creatorUserId,
-    });
+  });
 
     const completion = validateRandomVisitCompletionPayload({
       comment,
