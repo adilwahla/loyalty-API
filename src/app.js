@@ -102,6 +102,7 @@ app.use('/api/v1/mobile', require('./routes/api/v1/mobile/appVersion.routes'));
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/salesRep.routes'));
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/branchManager.mobile.routes'));
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/task.routes'));
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/deviceToken.routes'));
 
 
 app.use('/api/v1/admin/sales-reps', require('./routes/api/v1/admin/salesRep.routes'));
@@ -165,6 +166,9 @@ app.use('/api/v1/admin/rbac', require('./routes/api/v1/admin/rbac.routes'));
 sequelize.sync()
   .then(() => {
     console.log('✅ Database synced');
+    try {
+      require('./config/firebase').getFirebaseAdmin();
+    } catch (_) { /* logged inside firebase.js */ }
     startServer();
   })
   .catch((err) => {

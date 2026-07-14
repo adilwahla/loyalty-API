@@ -7,6 +7,17 @@ const {
   emitTaskCompleted,
   emitTaskAssigned
 } = require("../../utils/taskEvents");
+const { sendTaskAssignedNotification } = require("../../services/v1/pushNotification.service");
+
+function notifyTaskAssignedPush(task) {
+  const salesRepId = String(task?.salesRepId || '').trim();
+  if (!salesRepId || !task?.id) return;
+  sendTaskAssignedNotification({
+    salesRepId,
+    taskId: task.id,
+    customerName: task.customerName,
+  }).catch((err) => console.error("[PUSH] task assigned failed", err));
+}
 
 function resolveTaskId(req) {
   const fromParams = String(req.params.id || "").trim();
@@ -190,6 +201,7 @@ exports.createTask = async (req, res) => {
 
     const io = req.app.get("io");
     if (io) emitTaskCreated(io, task);
+    notifyTaskAssignedPush(task);
 
     res.status(201).json(success("Task created successfully", taskService.formatTaskForApi(task)));
   } catch (err) {
@@ -230,15 +242,20 @@ exports.updateTask = async (req, res) => {
     if (!task) return res.status(404).json(error("Task not found"));
 
     const io = req.app.get("io");
+    const assigneeChanged = task.oldUserId && task.oldUserId !== task.userId;
 
     if (io) {
       if (req.body.taskStatus === "Completed") {
         emitTaskCompleted(io, task);
-      } else if (task.oldUserId && task.oldUserId !== task.userId) {
+      } else if (assigneeChanged) {
         emitTaskAssigned(io, task, task.oldUserId);
       } else {
         emitTaskUpdated(io, task);
       }
+    }
+
+    if (assigneeChanged) {
+      notifyTaskAssignedPush(task);
     }
 
     const taskData = taskService.formatTaskForApi(task);
@@ -275,6 +292,9 @@ exports.reassignTask = async (req, res) => {
 
     if (io && task.oldUserId && task.oldUserId !== task.userId) {
       emitTaskAssigned(io, task, task.oldUserId);
+    }
+    if (task.oldUserId && task.oldUserId !== task.userId) {
+      notifyTaskAssignedPush(task);
     }
 
     const taskData = taskService.formatTaskForApi(task);

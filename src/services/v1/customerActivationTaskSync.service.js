@@ -1,5 +1,6 @@
 const { Op } = require('sequelize');
 const { User, Task, sequelize } = require('../../models');
+const { sendTaskAssignedNotification } = require('./pushNotification.service');
 
 const ACTIVATION_TASK_TITLE = 'تفعيل موقع العميل';
 const ACTIVATION_TASK_TITLE_LEGACY = 'Activate Customer Location';
@@ -82,7 +83,7 @@ async function ensureActivationTaskForCustomer({ bsgCustId, customerName, userId
       null;
   }
 
-  return Task.create(
+  const task = await Task.create(
     {
       userId,
       salesRepId: resolvedSalesRepId,
@@ -97,6 +98,14 @@ async function ensureActivationTaskForCustomer({ bsgCustId, customerName, userId
     },
     { transaction }
   );
+
+  sendTaskAssignedNotification({
+    salesRepId: resolvedSalesRepId,
+    taskId: task.id,
+    customerName: customerName || bsgCustId,
+  }).catch((err) => console.error('[PUSH] activation task assigned failed', err));
+
+  return task;
 }
 
 async function completePendingActivationTasksForBsgCustId(bsgCustId, transaction) {
