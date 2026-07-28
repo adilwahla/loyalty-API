@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const taskController = require("../../../../src/controllers/v1/taskController");
-const { authenticate } = require("../../../../src/middleware/auth");
+const { authenticate , optionalAuthenticate } = require("../../../../src/middleware/auth");
  
 // ✅ Filter endpoints (must come first to avoid conflicts with /:id)
 router.get("/my", authenticate, taskController.getMyTasks);
@@ -12,7 +12,7 @@ router.get("/priority/:priority", taskController.getTasksByPriority);
 router.get("/date-range", taskController.getTasksByDateRange);
  
 // ✅ Generic routes (must come after specific routes)
-router.get("/", taskController.getAllTasks);
+router.get("/",optionalAuthenticate, taskController.getAllTasks);
 router.get("/:id", taskController.getTaskById);
  
 router.post("/", authenticate, taskController.createTask);

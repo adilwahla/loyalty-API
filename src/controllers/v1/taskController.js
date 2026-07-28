@@ -1,5 +1,5 @@
 const taskService = require("../../services/v1/taskService");
-const { Task } = require("../../models");
+const { Task , User  } = require("../../models");
 const { success, error } = require("../../utils/response");
 const {
   emitTaskCreated,
@@ -28,16 +28,44 @@ function resolveTaskId(req) {
 }
 
 // ✅ Get all tasks
+// exports.getAllTasks = async (req, res) => {
+//   try {
+//     const tasks = await taskService.getAllTasks();
+
+//     res.json(success("Tasks fetched successfully", taskService.formatTasksForApi(tasks)));
+//   } catch (err) {
+//     res.status(500).json(error("Failed to fetch tasks", err.message));
+//   }
+// };
+// ✅ Get all tasks — scoped only when caller is an identified BRANCH_MANAGER
 exports.getAllTasks = async (req, res) => {
   try {
-    const tasks = await taskService.getAllTasks();
+    console.log('[getAllTasks] req.user:', req.user); // ← temporary, remove after confirming
+
+    let tasks = null;
+
+    if (req.user?.id) {
+      const requestingUser = await User.findByPk(req.user.id, {
+        attributes: ["id", "role", "salesRepId", "branchManagerId"],
+      });
+      console.log('[getAllTasks] resolved requestingUser:', requestingUser?.toJSON()); // ← temporary
+
+      if (requestingUser?.role === "BRANCH_MANAGER") {
+        tasks = await taskService.getTasksForRequestingUser(requestingUser);
+        console.log('[getAllTasks] scoped tasks count:', tasks.length); // ← temporary
+      }
+    }
+
+    if (tasks === null) {
+      console.log('[getAllTasks] falling through to unrestricted getAllTasks()'); // ← temporary
+      tasks = await taskService.getAllTasks();
+    }
 
     res.json(success("Tasks fetched successfully", taskService.formatTasksForApi(tasks)));
   } catch (err) {
     res.status(500).json(error("Failed to fetch tasks", err.message));
   }
 };
-
 // ✅ Get task by ID
 exports.getTaskById = async (req, res) => {
   try {

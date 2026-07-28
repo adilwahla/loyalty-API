@@ -551,7 +551,57 @@ class TaskService {
     const tasks = await Task.findAll({ include: taskIncludes() });
     return await loadCustomersForTasks(tasks);
   }
- 
+ /**
+   * Returns tasks scoped to the requesting user's role.
+   * - Any role other than BRANCH_MANAGER: all tasks, unchanged (delegates to getAllTasks()).
+   * - BRANCH_MANAGER: only tasks assigned to their own sales reps (matched via
+   *   User.branchManagerId === BM's own salesRepId/branchManagerId code — same
+   *   linkage this file already uses in assertRepLinkedToCustomer) plus tasks
+   *   assigned to the BM directly.
+   *
+   * @param {{ id: string, role: string, salesRepId?: string, branchManagerId?: string }} requestingUser
+   */
+  async getTasksForRequestingUser(requestingUser) {
+    if (!requestingUser || requestingUser.role !== "BRANCH_MANAGER") {
+      return this.getAllTasks();
+    }
+
+    const bmCode =
+      (requestingUser.salesRepId && String(requestingUser.salesRepId).trim()) ||
+      (requestingUser.branchManagerId && String(requestingUser.branchManagerId).trim()) ||
+      null;
+
+    if (!bmCode) {
+      // Can't resolve this branch manager's own code — fail closed (empty)
+      // rather than accidentally falling through to "show everything".
+      return [];
+    }
+
+    const teamSalesReps = await User.findAll({
+      where: { role: "SALES_REP", branchManagerId: bmCode },
+      attributes: ["id", "salesRepId"],
+    });
+
+    const scopedUserIds = new Set([requestingUser.id]);
+    const scopedSalesRepIds = new Set([bmCode]);
+    teamSalesReps.forEach((u) => {
+      if (u.id) scopedUserIds.add(u.id);
+      if (u.salesRepId) scopedSalesRepIds.add(String(u.salesRepId).trim());
+    });
+
+    const tasks = await Task.findAll({
+      where: {
+        [Op.or]: [
+          { userId: { [Op.in]: [...scopedUserIds] } },
+          { salesRepId: { [Op.in]: [...scopedSalesRepIds] } },
+        ],
+      },
+      include: taskIncludes(),
+    });
+
+    return await loadCustomersForTasks(tasks);
+  }
+/**  ------------------------------------------------------------------------- */
   async getTaskById(id) {
     const task = await Task.findByPk(id, { 
       include: taskIncludes([

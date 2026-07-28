@@ -47,3 +47,27 @@ exports.restrictToRoles = (...roles) => {
     next();
   };
 };
+
+/**
+ * Like `authenticate`, but never rejects the request.
+ * - Valid token → req.user = decoded payload, continue.
+ * - No token, or invalid/expired token → req.user = null, continue.
+ * Use only on routes that must stay open to unauthenticated callers
+ * but want role-aware behavior *when* a valid token happens to be present.
+ */
+exports.optionalAuthenticate = (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader) {
+    req.user = null;
+    return next();
+  }
+
+  const token = authHeader.split(' ')[1];
+  try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded;
+  } catch (err) {
+    req.user = null; // invalid/expired token — proceed unauthenticated rather than 401
+  }
+  next();
+};
