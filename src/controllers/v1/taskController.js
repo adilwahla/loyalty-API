@@ -183,7 +183,17 @@ exports.completeRandomVisit = async (req, res) => {
       req.body?.nfc_value ?? req.body?.nfcValue ?? req.body?.scanned_nfc_value;
     const nfcSerialNumber =
       req.body?.nfc_serial_number ?? req.body?.nfcSerialNumber;   // ← NEW
-    const { comment, stockCount, dateVisit, date_visit, nextVisitDate } = req.body || {};
+    const {
+      comment,
+      stockCount,
+      dateVisit,
+      date_visit,
+      nextVisitDate,
+      collectedAmount,
+      collected_amount,
+      soldAmount,
+      sold_amount,
+    } = req.body || {};
 
     const result = await taskService.completeRandomVisitFromNfc({
       nfcValue,
@@ -192,6 +202,8 @@ exports.completeRandomVisit = async (req, res) => {
       comment,
       stockCount,
       dateVisit: dateVisit ?? date_visit ?? nextVisitDate,
+      collectedAmount: collectedAmount ?? collected_amount,
+      soldAmount: soldAmount ?? sold_amount,
     });
 
     const io = req.app.get("io");
@@ -253,7 +265,16 @@ exports.updateTask = async (req, res) => {
       return res.status(400).json(error("Task id is required"));
     }
 
-    const { taskStatus, comment, stockCount, dateVisit } = req.body || {};
+    const {
+      taskStatus,
+      comment,
+      stockCount,
+      dateVisit,
+      collectedAmount,
+      collected_amount,
+      soldAmount,
+      sold_amount,
+    } = req.body || {};
 
     if (taskStatus === 'Completed') {
       const existing = await Task.findByPk(taskId);
@@ -268,6 +289,28 @@ exports.updateTask = async (req, res) => {
         }
         if (!dateVisit) {
           return res.status(400).json(error('Next visit date is required when completing a task'));
+        }
+        const normalizedCollectedAmount = collectedAmount ?? collected_amount;
+        if (
+          normalizedCollectedAmount === undefined ||
+          normalizedCollectedAmount === null ||
+          normalizedCollectedAmount === ''
+        ) {
+          return res.status(400).json(error('Collected amount is required when completing a task'));
+        }
+        if (Number.isNaN(Number(normalizedCollectedAmount)) || Number(normalizedCollectedAmount) < 0) {
+          return res.status(400).json(error('Collected amount must be a valid number greater than or equal to 0'));
+        }
+        const normalizedSoldAmount = soldAmount ?? sold_amount;
+        if (
+          normalizedSoldAmount === undefined ||
+          normalizedSoldAmount === null ||
+          normalizedSoldAmount === ''
+        ) {
+          return res.status(400).json(error('Sold amount is required when completing a task'));
+        }
+        if (Number.isNaN(Number(normalizedSoldAmount)) || Number(normalizedSoldAmount) < 0) {
+          return res.status(400).json(error('Sold amount must be a valid number greater than or equal to 0'));
         }
       }
     }

@@ -81,6 +81,16 @@ const Task = sequelize.define(
       allowNull: true,
       field: 'stock_count',
     },
+    collectedAmount: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: true,
+      field: 'collected_amount',
+    },
+    soldAmount: {
+      type: DataTypes.DECIMAL(12, 2),
+      allowNull: true,
+      field: 'sold_amount',
+    },
     description: {
       type: DataTypes.TEXT,
       allowNull: true
