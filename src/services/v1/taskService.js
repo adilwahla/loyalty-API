@@ -222,7 +222,13 @@ function isRandomVisitTask(task) {
   return String(task?.taskType || "").trim() === RANDOM_VISIT_TASK_TYPE;
 }
 
-function validateRandomVisitCompletionPayload({ comment, stockCount, dateVisit }) {
+function validateRandomVisitCompletionPayload({
+  comment,
+  stockCount,
+  dateVisit,
+  collectedAmount,
+  soldAmount,
+}) {
   if (!comment || !String(comment).trim()) {
     throw new AppError("Comment is required when completing a task", 400);
   }
@@ -238,10 +244,28 @@ function validateRandomVisitCompletionPayload({ comment, stockCount, dateVisit }
     throw new AppError("Stock count must be a valid number greater than or equal to 0", 400);
   }
 
+  const parsedCollectedAmount = parseAmount(collectedAmount);
+  if (parsedCollectedAmount === null) {
+    throw new AppError("Collected amount is required when completing a task", 400);
+  }
+  if (Number.isNaN(parsedCollectedAmount) || parsedCollectedAmount < 0) {
+    throw new AppError("Collected amount must be a valid number greater than or equal to 0", 400);
+  }
+
+  const parsedSoldAmount = parseAmount(soldAmount);
+  if (parsedSoldAmount === null) {
+    throw new AppError("Sold amount is required when completing a task", 400);
+  }
+  if (Number.isNaN(parsedSoldAmount) || parsedSoldAmount < 0) {
+    throw new AppError("Sold amount must be a valid number greater than or equal to 0", 400);
+  }
+
   return {
     comment: String(comment).trim(),
     dateVisit,
     stockCount: parsedStockCount,
+    collectedAmount: parsedCollectedAmount,
+    soldAmount: parsedSoldAmount,
   };
 }
 
@@ -494,6 +518,13 @@ function parseStockCount(value) {
   return parsed;
 }
 
+function parseAmount(value) {
+  if (value === undefined || value === null || value === '') return null;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return NaN;
+  return parsed;
+}
+
 function normalizeTaskUpdateData(data) {
   if (!data || typeof data !== 'object') return data;
   if (data.dateVisit === undefined && data.date_visit !== undefined) {
@@ -505,6 +536,12 @@ function normalizeTaskUpdateData(data) {
   if (data.stockCount === undefined && data.stock_count !== undefined) {
     data.stockCount = data.stock_count;
   }
+  if (data.collectedAmount === undefined && data.collected_amount !== undefined) {
+    data.collectedAmount = data.collected_amount;
+  }
+  if (data.soldAmount === undefined && data.sold_amount !== undefined) {
+    data.soldAmount = data.sold_amount;
+  }
   return data;
 }
 
@@ -515,6 +552,10 @@ function validateTaskCompletion(task, data) {
   const comment = data.comment !== undefined ? data.comment : task.comment;
   const dateVisit = data.dateVisit !== undefined ? data.dateVisit : task.dateVisit;
   const stockCountRaw = data.stockCount !== undefined ? data.stockCount : task.stockCount;
+  const collectedAmountRaw =
+    data.collectedAmount !== undefined ? data.collectedAmount : task.collectedAmount;
+  const soldAmountRaw =
+    data.soldAmount !== undefined ? data.soldAmount : task.soldAmount;
 
   if (!comment || !String(comment).trim()) {
     throw new AppError('Comment is required when completing a task', 400);
@@ -532,7 +573,25 @@ function validateTaskCompletion(task, data) {
     throw new AppError('Stock count must be a valid number greater than or equal to 0', 400);
   }
 
+  const collectedAmount = parseAmount(collectedAmountRaw);
+  if (collectedAmount === null) {
+    throw new AppError('Collected amount is required when completing a task', 400);
+  }
+  if (Number.isNaN(collectedAmount) || collectedAmount < 0) {
+    throw new AppError('Collected amount must be a valid number greater than or equal to 0', 400);
+  }
+
+  const soldAmount = parseAmount(soldAmountRaw);
+  if (soldAmount === null) {
+    throw new AppError('Sold amount is required when completing a task', 400);
+  }
+  if (Number.isNaN(soldAmount) || soldAmount < 0) {
+    throw new AppError('Sold amount must be a valid number greater than or equal to 0', 400);
+  }
+
   data.stockCount = stockCount;
+  data.collectedAmount = collectedAmount;
+  data.soldAmount = soldAmount;
 }
  
 class TaskService {
@@ -668,6 +727,30 @@ class TaskService {
       data.stockCount = stockCount;
     }
 
+    if (data.collectedAmount !== undefined) {
+      const collectedAmount = parseAmount(data.collectedAmount);
+      if (
+        data.collectedAmount !== null &&
+        data.collectedAmount !== '' &&
+        (Number.isNaN(collectedAmount) || collectedAmount < 0)
+      ) {
+        throw new AppError('Collected amount must be a valid number greater than or equal to 0', 400);
+      }
+      data.collectedAmount = collectedAmount;
+    }
+
+    if (data.soldAmount !== undefined) {
+      const soldAmount = parseAmount(data.soldAmount);
+      if (
+        data.soldAmount !== null &&
+        data.soldAmount !== '' &&
+        (Number.isNaN(soldAmount) || soldAmount < 0)
+      ) {
+        throw new AppError('Sold amount must be a valid number greater than or equal to 0', 400);
+      }
+      data.soldAmount = soldAmount;
+    }
+
     // Keep userId + salesRepId in sync when either assignee field changes
     if (data.userId !== undefined || data.salesRepId !== undefined || data.branchManagerId !== undefined) {
       const assignee = await resolveTaskAssignee({
@@ -708,6 +791,8 @@ async completeRandomVisitFromNfc({
   comment,
   stockCount,
   dateVisit,
+  collectedAmount,
+  soldAmount,
 }) {
   const { customer, assignee } = await prepareRandomVisitContext({
     nfcValue,
@@ -719,6 +804,8 @@ async completeRandomVisitFromNfc({
       comment,
       stockCount,
       dateVisit,
+      collectedAmount,
+      soldAmount,
     });
 
     const visitDate = todayDateOnly();
@@ -745,6 +832,8 @@ async completeRandomVisitFromNfc({
       description: RANDOM_VISIT_DESCRIPTION,
       comment: completion.comment,
       stockCount: completion.stockCount,
+      collectedAmount: completion.collectedAmount,
+      soldAmount: completion.soldAmount,
       dateVisit: completion.dateVisit,
     });
 

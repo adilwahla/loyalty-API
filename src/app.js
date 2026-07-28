@@ -1,5 +1,10 @@
-const express = require('express');
 const dotenv = require('dotenv');
+dotenv.config();
+
+// Align Node process timezone with app DB timezone (Riyadh = UTC+3).
+process.env.TZ = process.env.TZ || process.env.APP_TIMEZONE_IANA || 'Asia/Riyadh';
+
+const express = require('express');
 const bodyParser = require('body-parser');
 const sequelize = require('../config/database');
 // const { swaggerUi, swaggerSpec } = require('./docs/swagger');
@@ -11,7 +16,6 @@ const multer = require('multer');
 // Access io that was set in server.js
 const io = app.get('io');
 
-dotenv.config();
 // const app = express();
 
 // Middleware

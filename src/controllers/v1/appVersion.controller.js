@@ -15,7 +15,12 @@ const LOYALTY_PACKAGE_IDS = new Set([LOYALTY_ANDROID_PACKAGE_ID, LOYALTY_IOS_PAC
 // Sales Rep Tracker — package ids
 const SALES_REP_ANDROID_PACKAGE_ID = 'com.binshihon.sales_rep_tracker';
 const SALES_REP_IOS_PACKAGE_ID = 'com.binshihon.salestracker';
-const SALES_REP_PACKAGE_IDS = new Set([SALES_REP_ANDROID_PACKAGE_ID, SALES_REP_IOS_PACKAGE_ID]);
+const SALES_REP_IOS_ALT_PACKAGE_ID = 'com.example.salesRepTracker';
+const SALES_REP_PACKAGE_IDS = new Set([
+  SALES_REP_ANDROID_PACKAGE_ID,
+  SALES_REP_IOS_PACKAGE_ID,
+  SALES_REP_IOS_ALT_PACKAGE_ID,
+]);
 
 const APP_CONFIG_MAP = {
   // Loyalty (Rewards) — Android
@@ -41,6 +46,13 @@ const APP_CONFIG_MAP = {
   },
   // Sales Rep Tracker — iOS
   [SALES_REP_IOS_PACKAGE_ID]: {
+    latestVersion: 'APP_SALES_REP_IOS_LATEST_VERSION',
+    minVersion: 'APP_SALES_REP_IOS_MIN_VERSION',
+    storeUrlAndroid: 'APP_SALES_REP_STORE_URL_ANDROID',
+    storeUrlIos: 'APP_SALES_REP_STORE_URL_IOS',
+  },
+  // Sales Rep Tracker — iOS legacy/live alias
+  [SALES_REP_IOS_ALT_PACKAGE_ID]: {
     latestVersion: 'APP_SALES_REP_IOS_LATEST_VERSION',
     minVersion: 'APP_SALES_REP_IOS_MIN_VERSION',
     storeUrlAndroid: 'APP_SALES_REP_STORE_URL_ANDROID',

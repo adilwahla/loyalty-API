@@ -1,6 +1,9 @@
 const { Sequelize } = require('sequelize');
 require('dotenv').config();
 
+// Sequelize defaults to UTC; without this, 11:00 Riyadh is stored/read as 08:00.
+const DB_TIMEZONE = process.env.APP_TIMEZONE || '+03:00';
+
 const sequelize = new Sequelize(
   process.env.DB_NAME,
   process.env.DB_USER,
@@ -9,6 +12,7 @@ const sequelize = new Sequelize(
     host: process.env.DB_HOST,
     port: process.env.DB_PORT,
     dialect: 'mysql',
+    timezone: DB_TIMEZONE,
 
     dialectOptions: {
       charset: 'utf8mb4',
@@ -28,7 +32,7 @@ const sequelize = new Sequelize(
 
       afterCreate: (connection, done) => {
         connection.query(
-          "SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci;",
+          `SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci; SET time_zone = '${DB_TIMEZONE}';`,
           (err) => done(err, connection)
         );
       }
