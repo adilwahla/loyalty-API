@@ -10,7 +10,16 @@ const { sendMobishastraSms: sendSms } = require('../../utils/sendMobishastraSms'
 const normalizePhone = require('../../utils/normalizePhone');
 const { setOtp, verifyOtp, clearOtp } = require('../../utils/otpCache');
 const { emitBOCreated } = require('../../utils/boEvents');
+const authTokenService = require('../../services/v1/authToken.service');
 const ENABLE_OTP = process.env.ENABLE_OTP_VERIFICATION === 'true';
+
+function readSessionMetadata(req) {
+  const body = req.body || {};
+  return {
+    deviceId: body.deviceId ? String(body.deviceId).trim() : null,
+    deviceName: body.deviceName ? String(body.deviceName).trim() : null,
+  };
+}
 // 1️⃣ Send OTP
 exports.sendOtp = async (req, res) => {
   const { phoneNumber } = req.body;
@@ -222,10 +231,30 @@ exports.loginSalesRep = async (req, res) => {
   if (!user.password || !(await bcrypt.compare(password, user.password))) {
     return res.status(403).json({ success: false, message: 'Invalid credentials' });
   }
-  const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
-  const token = jwt.sign({ id: user.id, role: user.role }, process.env.JWT_SECRET, { expiresIn });
-  const userSafe = { ...user.toJSON() };
-  delete userSafe.password;
-  userSafe.apiToken = token;
-  return res.status(200).json(success('Login successful', userSafe));
+
+  const tokenSet = await authTokenService.createSessionForUser(user, readSessionMetadata(req));
+
+  return res.status(200).json({
+    success: true,
+    data: tokenSet.payload,
+  });
+};
+
+exports.refreshToken = async (req, res) => {
+  try {
+    const refreshToken = String(req.body?.refreshToken || '').trim();
+    if (!refreshToken) {
+      return res.status(400).json({ success: false, message: 'refreshToken is required' });
+    }
+
+    const tokenSet = await authTokenService.rotateRefreshToken(refreshToken, readSessionMetadata(req));
+    return res.status(200).json({
+      success: true,
+      data: tokenSet.payload,
+    });
+  } catch (err) {
+    const statusCode = err.statusCode || 500;
+    const message = err.message || 'Failed to refresh token';
+    return res.status(statusCode).json({ success: false, message, code: err.code || 'REFRESH_FAILED' });
+  }
 };

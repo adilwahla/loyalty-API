@@ -16,6 +16,7 @@ router.post('/forgot-password/reset-password', controller.forgotPasswordResetPas
 router.use('/', require('./salesRep.auth.routes'));
 // Elham-endpoint
 router.post('/login-sales-rep', controller.loginSalesRep);
+router.post('/refresh-token', controller.refreshToken);
 
 
 

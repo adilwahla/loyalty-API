@@ -1,40 +1,55 @@
-const jwt = require('jsonwebtoken');
+const authTokenService = require('../services/v1/authToken.service');
+
+function unauthorized(res, err) {
+  const payload = {
+    success: false,
+    message: err.message || 'Invalid token',
+  };
+
+  if (err.code) {
+    payload.code = err.code;
+  }
+
+  return res.status(err.statusCode || 401).json(payload);
+}
 
 exports.protect = (allowedRoles = []) => {
-  return (req, res, next) => {
+  return async (req, res, next) => {
     const authHeader = req.headers.authorization;
-    if (!authHeader) return res.status(401).json({ error: 'No token provided' });
+    if (!authHeader) return res.status(401).json({ success: false, message: 'No token provided' });
 
     const token = authHeader.split(' ')[1];
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET);
+      const decoded = authTokenService.verifyAccessToken(token);
+      await authTokenService.ensureActiveUser(decoded);
       if (allowedRoles.length && !allowedRoles.includes(decoded.role)) {
-        return res.status(403).json({ error: 'Access denied' });
+        return res.status(403).json({ success: false, message: 'Access denied' });
       }
       req.user = decoded;
       next();
     } catch (err) {
-      return res.status(401).json({ error: 'Invalid token' });
+      return unauthorized(res, err);
     }
   };
 };
 
-exports.authenticate = (req, res, next) => {
+exports.authenticate = async (req, res, next) => {
   const authHeader = req.headers.authorization;
   if (!authHeader) {
     console.log('[AUTH] ❌ No token provided');
-    return res.status(401).json({ error: 'No token provided' });
+    return res.status(401).json({ success: false, message: 'No token provided' });
   }
 
   const token = authHeader.split(' ')[1];
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = authTokenService.verifyAccessToken(token);
+    await authTokenService.ensureActiveUser(decoded);
     console.log('[AUTH] ✅ Decoded token:', decoded);
     req.user = decoded;
     next();
   } catch (err) {
     console.error('[AUTH] ❌ Invalid token', err.message);
-    return res.status(401).json({ error: 'Invalid token' });
+    return unauthorized(res, err);
   }
 };
 

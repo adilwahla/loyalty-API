@@ -8,6 +8,7 @@ const {
   ACTIVATION_TASK_TITLES,
   isActivationTaskType,
 } = require("./customerActivationTaskSync.service");
+const TASK_USER_ATTRIBUTES = ["id", "fullName", "email", "phoneNumber", "role", "salesRepId", "branchManagerId"];
 const CREATED_BY_USER_ATTRIBUTES = ["id", "fullName", "email", "role"];
 
 const SYSTEM_CREATOR_USER = {
@@ -105,7 +106,11 @@ async function resolveTaskAssignee({ userId, salesRepId, branchManagerId } = {},
 
 function taskIncludes(extra = []) {
   return [
-    { model: User, as: "user" },
+    {
+      model: User,
+      as: "user",
+      attributes: TASK_USER_ATTRIBUTES,
+    },
     {
       model: User,
       as: "createdByUser",
@@ -128,6 +133,14 @@ function formatTaskForApi(task) {
   if (!task) return task;
   const json = task.toJSON ? task.toJSON() : { ...task };
   const { oldUserId, ...rest } = json;
+
+  if (rest.user) {
+    delete rest.user.password;
+  }
+
+  if (rest.customer) {
+    delete rest.customer.password;
+  }
 
   if (!rest.createdById) {
     rest.createdById = null;

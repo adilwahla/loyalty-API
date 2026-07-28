@@ -17,6 +17,7 @@ const Task = require("./task");
 const TaskReassignHistory = require("./taskReassignHistory.model");
 const TaskType = require("./taskType.model");
 const DeviceTokenModel = require("./deviceToken.model");
+const AuthSessionModel = require("./authSession.model");
 // this is new update for group.
 const GroupModel = require("./group.model");
  
@@ -50,6 +51,7 @@ const SalesRep = SalesRepModel(sequelize, DataTypes);
 const BranchManager = BranchManagerModel(sequelize, DataTypes);
 const Group = GroupModel(sequelize, DataTypes);
 const DeviceToken = DeviceTokenModel(sequelize, DataTypes);
+const AuthSession = AuthSessionModel(sequelize, DataTypes);
  
 // RBAC models
 const Role = RoleModel(sequelize, DataTypes);
@@ -102,6 +104,9 @@ BranchManager.belongsTo(User, { foreignKey: 'managerId', targetKey: 'branchManag
 // Group associations (from first code)
 User.belongsTo(Group, { foreignKey: "groupId", as: "group", required: false });
 Group.hasMany(User, { foreignKey: "groupId", as: "users" });
+
+User.hasMany(AuthSession, { foreignKey: 'userId', as: 'authSessions' });
+AuthSession.belongsTo(User, { foreignKey: 'userId', as: 'user' });
  
 // Task belongs to customer (business owner) via customerId -> bsgCustId
 Task.belongsTo(User, { foreignKey: "customerId", targetKey: "bsgCustId", as: "customer", required: false });
@@ -137,6 +142,7 @@ module.exports = {
   TaskType,
   Group,
   DeviceToken,
+  AuthSession,
   // RBAC
   Role,
   Duty,
