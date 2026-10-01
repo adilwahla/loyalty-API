@@ -107,6 +107,7 @@ app.use('/api/v1/mobile', require('./routes/api/v1/mobile/salesRep.routes'));
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/branchManager.mobile.routes'));
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/task.routes'));
 app.use('/api/v1/mobile', require('./routes/api/v1/mobile/deviceToken.routes'));
+app.use('/api/v1/mobile', require('./routes/api/v1/mobile/customerStatement.routes'));
 
 
 app.use('/api/v1/admin/sales-reps', require('./routes/api/v1/admin/salesRep.routes'));

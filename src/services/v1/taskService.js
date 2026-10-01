@@ -129,6 +129,126 @@ function isActivationTask(task) {
   );
 }
 
+function toIsoDateOrNull(value) {
+  if (value == null || value === "") return null;
+  const date = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+function emptyLastStockCount() {
+  return { lastStockCount: null, lastStockCountDate: null };
+}
+
+/**
+ * Last completed visit stock for a customer (any visit type).
+ * Optionally exclude a task id so "last" means the previous visit, not the current one.
+ */
+async function findLastStockCountForCustomer(customerId, { excludeTaskId = null } = {}) {
+  const normalizedCustomerId = customerId != null ? String(customerId).trim() : "";
+  if (!normalizedCustomerId) return emptyLastStockCount();
+
+  const where = {
+    customerId: normalizedCustomerId,
+    taskStatus: "Completed",
+    stockCount: { [Op.ne]: null },
+  };
+  if (excludeTaskId) {
+    where.id = { [Op.ne]: excludeTaskId };
+  }
+
+  const previous = await Task.findOne({
+    where,
+    attributes: ["id", "customerId", "stockCount", "completedAt", "dateVisit", "dateTime", "updatedAt"],
+    order: [
+      ["completedAt", "DESC"],
+      ["updatedAt", "DESC"],
+      ["dateTime", "DESC"],
+    ],
+  });
+
+  if (!previous || previous.stockCount == null) return emptyLastStockCount();
+
+  return {
+    lastStockCount: previous.stockCount,
+    lastStockCountDate: toIsoDateOrNull(
+      previous.completedAt || previous.dateVisit || previous.dateTime || previous.updatedAt
+    ),
+  };
+}
+
+/**
+ * Batch-attach lastStockCount / lastStockCountDate onto task instances.
+ * For each task, uses the latest Completed task with stockCount for the same
+ * customerId, excluding the task itself.
+ */
+async function attachLastStockCountsToTasks(tasks) {
+  if (!tasks || tasks.length === 0) return tasks;
+
+  for (const task of tasks) {
+    const empty = emptyLastStockCount();
+    task.lastStockCount = empty.lastStockCount;
+    task.lastStockCountDate = empty.lastStockCountDate;
+    if (task.dataValues) {
+      task.dataValues.lastStockCount = empty.lastStockCount;
+      task.dataValues.lastStockCountDate = empty.lastStockCountDate;
+    }
+  }
+
+  const customerIds = [
+    ...new Set(
+      tasks
+        .map((t) => (t.customerId != null ? String(t.customerId).trim() : null))
+        .filter(Boolean)
+    ),
+  ];
+  if (customerIds.length === 0) return tasks;
+
+  const completed = await Task.findAll({
+    where: {
+      customerId: { [Op.in]: customerIds },
+      taskStatus: "Completed",
+      stockCount: { [Op.ne]: null },
+    },
+    attributes: ["id", "customerId", "stockCount", "completedAt", "dateVisit", "dateTime", "updatedAt"],
+    order: [
+      ["completedAt", "DESC"],
+      ["updatedAt", "DESC"],
+      ["dateTime", "DESC"],
+    ],
+  });
+
+  const byCustomer = new Map();
+  for (const row of completed) {
+    const key = String(row.customerId).trim();
+    if (!byCustomer.has(key)) byCustomer.set(key, []);
+    byCustomer.get(key).push(row);
+  }
+
+  for (const task of tasks) {
+    if (!task.customerId) continue;
+    const list = byCustomer.get(String(task.customerId).trim()) || [];
+    const previous = list.find((row) => row.id !== task.id) || null;
+    const payload = previous && previous.stockCount != null
+      ? {
+          lastStockCount: previous.stockCount,
+          lastStockCountDate: toIsoDateOrNull(
+            previous.completedAt || previous.dateVisit || previous.dateTime || previous.updatedAt
+          ),
+        }
+      : emptyLastStockCount();
+
+    task.lastStockCount = payload.lastStockCount;
+    task.lastStockCountDate = payload.lastStockCountDate;
+    if (task.dataValues) {
+      task.dataValues.lastStockCount = payload.lastStockCount;
+      task.dataValues.lastStockCountDate = payload.lastStockCountDate;
+    }
+  }
+
+  return tasks;
+}
+
 function formatTaskForApi(task) {
   if (!task) return task;
   const json = task.toJSON ? task.toJSON() : { ...task };
@@ -153,6 +273,9 @@ function formatTaskForApi(task) {
       role: rest.createdByUser.role,
     };
   }
+
+  if (rest.lastStockCount === undefined) rest.lastStockCount = null;
+  if (rest.lastStockCountDate === undefined) rest.lastStockCountDate = null;
 
   return rest;
 }
@@ -498,7 +621,8 @@ async function loadCustomersForTasks(tasks) {
       }
     }
   });
- 
+
+  await attachLastStockCountsToTasks(tasks);
   return tasks;
 }
  
@@ -842,8 +966,11 @@ class TaskService {
  
 async resolveRandomVisitCustomerFromNfc({ nfcValue, nfcSerialNumber, creatorUserId }) {
   const { customer } = await prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUserId });
+  const lastStock = await findLastStockCountForCustomer(customer.bsgCustId);
   return {
     customer: formatRandomVisitCustomer(customer),
+    lastStockCount: lastStock.lastStockCount,
+    lastStockCountDate: lastStock.lastStockCountDate,
   };
 }
 
