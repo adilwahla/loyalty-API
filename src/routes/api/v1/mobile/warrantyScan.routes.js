@@ -5,9 +5,11 @@ const ctrl = require('../../../../controllers/v1/warrantyScan.controller');
 const { authenticate } = require('../../../../middleware/auth');
 
 // Location activation (specific paths before /:UUID)
+router.get('/customers/nearby', authenticate, ctrl.getNearbyCustomers);
 router.get('/customers/:bsg_cust_id/location-status', authenticate, ctrl.getLocationStatus);
 router.post('/customers/location/activate', authenticate, ctrl.activateCustomerLocation);
 router.post('/nfc/validate-scan', authenticate, ctrl.validateNfcScan);
+router.post('/nfc/scan-failures', authenticate, ctrl.reportScanFailure);
 
 router.post('/:UUID/warranty-scan', ctrl.createScan);
 router.get('/:UUID/warranty-scans', ctrl.getUserScans);

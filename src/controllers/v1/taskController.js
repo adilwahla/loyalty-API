@@ -160,18 +160,24 @@ exports.createRandomVisit = async (req, res) => {
       req.body?.nfc_value ?? req.body?.nfcValue ?? req.body?.scanned_nfc_value;
     const nfcSerialNumber =
       req.body?.nfc_serial_number ?? req.body?.nfcSerialNumber;   // ← NEW
+    const repLat = req.body?.rep_lat ?? req.body?.repLat;
+    const repLng = req.body?.rep_lng ?? req.body?.repLng;
 
     const result = await taskService.resolveRandomVisitCustomerFromNfc({
       nfcValue,
       nfcSerialNumber,   // ← NEW
       creatorUserId,
+      repLat,
+      repLng,
     });
 
     res.json(success("Customer resolved successfully", result));
   } catch (err) {
     const status = err.statusCode || err.http || 500;
     const message = status === 500 ? "Failed to resolve customer from NFC scan" : err.message;
-    res.status(status).json(error(message, status === 500 ? err.message : null));
+    const body = error(message, status === 500 ? err.message : null);
+    if (err.code) body.code = err.code;
+    res.status(status).json(body);
   }
 };
 
@@ -183,6 +189,8 @@ exports.completeRandomVisit = async (req, res) => {
       req.body?.nfc_value ?? req.body?.nfcValue ?? req.body?.scanned_nfc_value;
     const nfcSerialNumber =
       req.body?.nfc_serial_number ?? req.body?.nfcSerialNumber;   // ← NEW
+    const repLat = req.body?.rep_lat ?? req.body?.repLat;
+    const repLng = req.body?.rep_lng ?? req.body?.repLng;
     const {
       comment,
       stockCount,
@@ -199,6 +207,8 @@ exports.completeRandomVisit = async (req, res) => {
       nfcValue,
       nfcSerialNumber,   // ← NEW
       creatorUserId,
+      repLat,
+      repLng,
       comment,
       stockCount,
       dateVisit: dateVisit ?? date_visit ?? nextVisitDate,
@@ -220,7 +230,9 @@ exports.completeRandomVisit = async (req, res) => {
   } catch (err) {
     const status = err.statusCode || err.http || 500;
     const message = status === 500 ? "Failed to complete random visit task" : err.message;
-    res.status(status).json(error(message, status === 500 ? err.message : null));
+    const body = error(message, status === 500 ? err.message : null);
+    if (err.code) body.code = err.code;
+    res.status(status).json(body);
   }
 };
 

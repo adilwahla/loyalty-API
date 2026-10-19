@@ -118,7 +118,7 @@ exports.registerUser = async (req, res) => {
         salesRepId: user.salesRepId ?? null,
         email: user.email ?? null,
         rawStatus: user.status,
-        status: user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status),
+        status: user.status === 'ACTIVATED' ? 'Activated' : (user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status)),
         at: new Date().toISOString(),
       });
     }
@@ -153,7 +153,8 @@ exports.loginUser = async (req, res) => {
   if (!user.password || !(await bcrypt.compare(password, user.password))) {
     return res.status(403).json({ success: false, message: 'Invalid credentials' });
   }
-  if (user.role === 'BUSINESS_OWNER' && user.status !== 'APPROVED') {
+  const accountStatus = String(user.status || '').toUpperCase();
+  if (user.role === 'BUSINESS_OWNER' && accountStatus !== 'APPROVED' && accountStatus !== 'ACTIVATED') {
     return res.status(403).json({
       success: false,
       code: 'BO_APPROVAL_REQUIRED',

@@ -109,7 +109,7 @@ module.exports = (sequelize, DataTypes) => {
     },
     // NEW (non-breaking)
     status: {
-      type: DataTypes.STRING, // '-', 'PENDING', 'APPROVED', 'REJECTED'
+      type: DataTypes.STRING, // '-', 'PENDING', 'APPROVED', 'ACTIVATED', 'REJECTED'
       allowNull: false,
       defaultValue: '-',      // non-BO users show '-'
       field: 'status',

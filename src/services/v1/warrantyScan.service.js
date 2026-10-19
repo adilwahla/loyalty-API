@@ -2,6 +2,8 @@
 const { WarrantyScan, sequelize, User, UserRole, BrandMaster, TechnicianBusinessOwnerLink, Task } = require('../../models');
 const { Op } = require('sequelize');
 const customerActivationSync = require('./customerActivationTaskSync.service');
+const { verifyNfcSerialNumber, enrollNfcSerialNumber } = require('../../utils/nfcSerial.util');
+const { isCustomerFieldActivated, mobileFieldStatus } = require('../../utils/customerFieldStatus');
 const { toWarrantyView } = require('../../utils/warrantyTransform');
 const { getWarrantyFromWP } = require('../../utils/getWarrantyFromWP');
 const { emitAnalytics } = require('../../utils/analytics.emit');
@@ -250,32 +252,60 @@ async function resolveBusinessOwnerByBsgCustId({ scannedBsgCustId, nfcValue, tra
   });
 }
 
-/**
- * Enrolls (first scan, no serial on file) or verifies (serial already on file) the
- * physical tag's hardware serial number against the customer record.
- * Must run inside the same transaction/lock as the rest of the activation logic.
- */
-async function verifyOrEnrollNfcSerialNumber({ customer, scannedSerial, transaction }) {
-  if (!scannedSerial) return; // no serial sent — old app version, skip silently for now
+const NEARBY_CUSTOMER_RADIUS_METERS = 50;
 
-  const serial = String(scannedSerial).trim().toUpperCase();
-  const storedSerial = customer.nfcSerialNumber
-    ? String(customer.nfcSerialNumber).trim().toUpperCase()
-    : null;
-
-  if (!storedSerial) {
-    await customer.update({ nfcSerialNumber: serial }, { transaction });
-    return;
-  }
-
-  if (storedSerial !== serial) {
-    const err = new Error('This tag does not match the tag registered for this customer.');
-    err.code = 'NFC_SERIAL_MISMATCH';
-    err.http = 409;
+exports.listNearbyCustomers = async ({ userId, lat, lng }) => {
+  const latitude = parseCoordinate(lat);
+  const longitude = parseCoordinate(lng);
+  if (latitude == null || longitude == null) {
+    const err = new Error('lat and lng are required and must be valid numbers');
+    err.http = 400;
     throw err;
   }
-}
 
+  const repUser = userId
+    ? await User.findByPk(userId, { attributes: ['salesRepId', 'branchManagerId'] })
+    : null;
+  const repCode = String(repUser?.salesRepId || repUser?.branchManagerId || '').trim();
+  if (!repCode) {
+    const err = new Error('Sales rep profile is missing an assignee code');
+    err.http = 400;
+    throw err;
+  }
+
+  const customers = await User.findAll({
+    where: {
+      role: 'BUSINESS_OWNER',
+      bsgCustId: { [Op.ne]: null },
+      latitude: { [Op.ne]: null },
+      longitude: { [Op.ne]: null },
+      [Op.or]: [
+        { salesRepId: repCode },
+        { branchManagerId: repCode },
+      ],
+    },
+    attributes: ['bsgCustId', 'businessName', 'businessAddress', 'latitude', 'longitude'],
+  });
+
+  return customers
+    .map((customer) => {
+      const customerLat = Number(customer.latitude);
+      const customerLng = Number(customer.longitude);
+      if (!Number.isFinite(customerLat) || !Number.isFinite(customerLng)) return null;
+      const custId = customer.bsgCustId ? String(customer.bsgCustId).trim() : '';
+      if (!custId) return null;
+      const distance = distanceMeters(latitude, longitude, customerLat, customerLng);
+      if (distance > NEARBY_CUSTOMER_RADIUS_METERS) return null;
+      return {
+        bsg_cust_id: custId,
+        business_name: customer.businessName || null,
+        business_address: customer.businessAddress || null,
+        distance_meters: Number(distance.toFixed(2)),
+      };
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.distance_meters - b.distance_meters);
+};
 
 exports.getLocationStatus = async ({ bsgCustId }) => {
   const customer = await User.findOne({
@@ -284,14 +314,16 @@ exports.getLocationStatus = async ({ bsgCustId }) => {
   });
   if (!customer) return null;
 
-  const hasLocation = customer.latitude != null && customer.longitude != null;
+  const hasLocation = isCustomerFieldActivated(customer);
   return {
     bsgCustId,
     parentCustId: customer.parentCustId || null,
+    status: mobileFieldStatus(customer),
     isLocationActivated: hasLocation,
     activatedAt: null,
     latitude: customer.latitude ?? null,
     longitude: customer.longitude ?? null,
+    businessAddress: customer.businessAddress ?? null,
     mode: 'legacy',
   };
 };
@@ -346,15 +378,24 @@ exports.activateCustomerLocation = async ({
       transaction,
       lock: transaction.LOCK.UPDATE,
     });
-    if (!customer) throw new Error('Customer not found for provided identifier');
+    if (!customer) {
+      const err = new Error('Customer not found for provided identifier');
+      if (scannedBsgCustId) err.customerId = String(scannedBsgCustId).trim();
+      throw err;
+    }
     if (!customer.bsgCustId) throw new Error('Customer does not have bsg_cust_id');
 
- // ← NEW: enroll-or-verify happens right after we lock the row, before anything else
-    await verifyOrEnrollNfcSerialNumber({ customer, scannedSerial: nfcSerialNumber, transaction });
-
-
-    const alreadyActivated = customer.latitude != null && customer.longitude != null;
+    const alreadyActivated = isCustomerFieldActivated(customer);
     if (alreadyActivated) {
+      try {
+        verifyNfcSerialNumber({ customer, scannedSerial: nfcSerialNumber });
+      } catch (err) {
+        err.customerId = customer.bsgCustId;
+        throw err;
+      }
+      if (String(customer.status || '').toUpperCase() !== 'ACTIVATED') {
+        await customer.update({ status: 'ACTIVATED' }, { transaction });
+      }
       await completeActivationTask({
         taskId,
         bsgCustId: customer.bsgCustId,
@@ -363,10 +404,13 @@ exports.activateCustomerLocation = async ({
 
       return {
         alreadyActivated: true,
+        status: 'Activated',
         bsgCustId: customer.bsgCustId,
         parentCustId: customer.parentCustId || null,
+        businessAddress: customer.businessAddress || null,
         latitude: customer.latitude,
         longitude: customer.longitude,
+        nfcSerialNumber: customer.nfcSerialNumber || null,
         activatedAt: null,
         activatedBy: null,
         taskStatus: 'Completed',
@@ -375,10 +419,24 @@ exports.activateCustomerLocation = async ({
       };
     }
 
-    const updates = { latitude, longitude };
-    if (businessAddress !== undefined) updates.businessAddress = businessAddress;
+    const address = businessAddress != null ? String(businessAddress).trim() : '';
+    if (!address) {
+      const err = new Error('business_address is required to activate the customer');
+      err.http = 400;
+      err.customerId = customer.bsgCustId;
+      throw err;
+    }
 
-    await customer.update(updates, { transaction });
+    try {
+      await enrollNfcSerialNumber({ customer, scannedSerial: nfcSerialNumber, transaction });
+    } catch (err) {
+      err.customerId = customer.bsgCustId;
+      throw err;
+    }
+    await customer.update(
+      { latitude, longitude, businessAddress: address, status: 'ACTIVATED' },
+      { transaction }
+    );
 
     await completeActivationTask({
       taskId,
@@ -388,11 +446,13 @@ exports.activateCustomerLocation = async ({
 
     return {
       alreadyActivated: false,
+      status: 'Activated',
       bsgCustId: customer.bsgCustId,
       parentCustId: customer.parentCustId || null,
-      businessAddress: businessAddress !== undefined ? businessAddress : customer.businessAddress || null,
+      businessAddress: address,
       latitude,
       longitude,
+      nfcSerialNumber: customer.nfcSerialNumber || null,
       activatedBy: activatedBy || null,
       taskStatus: 'Completed',
       taskCompleted: true,
@@ -414,36 +474,31 @@ exports.validateNfcScan = async ({ scannedNfcValue, nfcSerialNumber, repLat, rep
   const customer = await resolveBusinessOwnerByBsgCustId({ nfcValue: scannedNfcValue });
   if (!customer) throw new Error('Scanned NFC value does not map to a customer');
 
- // ← NEW: lock + enroll/verify before anything else
-  await sequelize.transaction(async (transaction) => {
-    const locked = await User.findByPk(customer.id, { lock: transaction.LOCK.UPDATE, transaction });
-    await verifyOrEnrollNfcSerialNumber({ customer: locked, scannedSerial: nfcSerialNumber, transaction });
-  });
-
+  try {
+    verifyNfcSerialNumber({ customer, scannedSerial: nfcSerialNumber });
+  } catch (err) {
+    err.customerId = customer.bsgCustId || null;
+    throw err;
+  }
 
   const bsgCustId = customer.bsgCustId;
   const parentCustId = customer.parentCustId || customer.bsgCustId;
+  const status = mobileFieldStatus(customer);
 
   if (!parentFlowEnabled) {
-    await sequelize.transaction(async (transaction) => {
-      await completeActivationTask({ taskId, bsgCustId, transaction });
-    });
-
     return {
       allowed: true,
       reason: 'LEGACY_FLOW',
+      status,
       bsgCustId,
       parentCustId,
       enforceDistance: false,
       maxDistanceMeters: 50,
       mode: 'legacy',
-      taskStatus: 'Completed',
-      taskCompleted: true,
-      taskId: taskId || null,
     };
   }
 
-  const hasLocation = customer.latitude != null && customer.longitude != null;
+  const hasLocation = isCustomerFieldActivated(customer);
 
   if (!hasLocation) {
     await sequelize.transaction(async (transaction) => {
@@ -464,6 +519,7 @@ exports.validateNfcScan = async ({ scannedNfcValue, nfcSerialNumber, repLat, rep
     return {
       allowed: true,
       reason: 'NOT_ACTIVATED',
+      status,
       bsgCustId,
       parentCustId,
       enforceDistance: false,
@@ -480,15 +536,10 @@ exports.validateNfcScan = async ({ scannedNfcValue, nfcSerialNumber, repLat, rep
 
   const allowed = distance <= 50;
 
-  if (allowed) {
-    await sequelize.transaction(async (transaction) => {
-      await completeActivationTask({ taskId, bsgCustId, transaction });
-    });
-  }
-
   return {
     allowed,
     reason: allowed ? 'WITHIN_RADIUS' : 'OUT_OF_RADIUS',
+    status,
     bsgCustId,
     parentCustId,
     enforceDistance: true,
@@ -498,8 +549,5 @@ exports.validateNfcScan = async ({ scannedNfcValue, nfcSerialNumber, repLat, rep
       latitude: Number(customer.latitude),
       longitude: Number(customer.longitude),
     },
-    taskStatus: allowed ? 'Completed' : undefined,
-    taskCompleted: allowed,
-    taskId: allowed ? (taskId || null) : null,
   };
 };

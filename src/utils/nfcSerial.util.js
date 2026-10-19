@@ -1,29 +1,49 @@
+function normalizeSerial(value) {
+  if (value == null) return null;
+  const serial = String(value).trim().toUpperCase();
+  return serial || null;
+}
+
+function serialMismatchError() {
+  const err = new Error('This tag does not match the tag registered for this customer.');
+  err.code = 'NFC_SERIAL_MISMATCH';
+  err.http = 409;
+  err.statusCode = 409;
+  return err;
+}
+
 /**
- * Enrolls (first scan, no serial on file) or verifies (serial already on file) the
- * physical tag's hardware serial number against a customer (User) record.
- * `customer` must be the row loaded inside `transaction` with a row lock,
- * so concurrent scans on the same customer can't race past this check.
+ * Compare a scanned tag serial with the value stored on the customer.
+ * Never writes. Other task types (random visit, validate-scan) use this only.
  */
-async function verifyOrEnrollNfcSerialNumber({ customer, scannedSerial, transaction }) {
-  if (!scannedSerial) return; // no serial sent — old app version, skip silently for now
+function verifyNfcSerialNumber({ customer, scannedSerial }) {
+  const serial = normalizeSerial(scannedSerial);
+  if (!serial) return;
 
-  const serial = String(scannedSerial).trim().toUpperCase();
-  const storedSerial = customer.nfcSerialNumber
-    ? String(customer.nfcSerialNumber).trim().toUpperCase()
-    : null;
+  const stored = normalizeSerial(customer?.nfcSerialNumber);
+  if (!stored) return;
+  if (stored !== serial) throw serialMismatchError();
+}
 
-  if (!storedSerial) {
+/**
+ * First activation only. Writes nfc_serial_number when the customer has none.
+ */
+async function enrollNfcSerialNumber({ customer, scannedSerial, transaction }) {
+  const serial = normalizeSerial(scannedSerial);
+  if (!serial) {
+    const err = new Error('nfc_serial_number is required to activate the customer');
+    err.code = 'NFC_SERIAL_REQUIRED';
+    err.http = 400;
+    err.statusCode = 400;
+    throw err;
+  }
+
+  const stored = normalizeSerial(customer?.nfcSerialNumber);
+  if (!stored) {
     await customer.update({ nfcSerialNumber: serial }, { transaction });
     return;
   }
-
-  if (storedSerial !== serial) {
-    const err = new Error('This tag does not match the tag registered for this customer.');
-    err.code = 'NFC_SERIAL_MISMATCH';
-    err.http = 409;
-    err.statusCode = 409; // taskService's error handling reads statusCode; warrantyScan's reads http
-    throw err;
-  }
+  if (stored !== serial) throw serialMismatchError();
 }
 
-module.exports = { verifyOrEnrollNfcSerialNumber };
+module.exports = { verifyNfcSerialNumber, enrollNfcSerialNumber };

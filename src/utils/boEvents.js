@@ -12,7 +12,8 @@ function emitBOCreated(io, user) {
     salesRepId: user.salesRepId ?? null,
     email: user.email ?? null,
     rawStatus: user.status,                             // expect 'PENDING' from mobile flow
-    status: user.status === 'APPROVED' ? 'Approved'
+    status: user.status === 'ACTIVATED' ? 'Activated'
+            : user.status === 'APPROVED' ? 'Approved'
             : user.status === 'PENDING' ? 'Pending'
             : user.status,
     at: new Date().toISOString(),
@@ -32,7 +33,8 @@ function emitBOUpdated(io, user) {
     salesRepId: user.salesRepId ?? null,
     email: user.email ?? null,
     rawStatus: user.status,
-    status: user.status === 'APPROVED' ? 'Approved'
+    status: user.status === 'ACTIVATED' ? 'Activated'
+            : user.status === 'APPROVED' ? 'Approved'
             : user.status === 'PENDING' ? 'Pending'
             : user.status,
     at: new Date().toISOString(),
@@ -52,7 +54,8 @@ function emitBOStatusChanged(io, user, rawStatus) {
     salesRepId: user.salesRepId ?? null,
     email: user.email ?? null,
     rawStatus,
-    status: rawStatus === 'APPROVED' ? 'Approved'
+    status: rawStatus === 'ACTIVATED' ? 'Activated'
+           : rawStatus === 'APPROVED' ? 'Approved'
            : rawStatus === 'PENDING' ? 'Pending'
            : rawStatus === 'REJECTED' ? 'Rejected'
            : '-',

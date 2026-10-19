@@ -304,7 +304,7 @@ exports.createBusinessOwner = async (req, res, next) => {
 
         rawStatus: user.status,
 
-        status: user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status),
+        status: user.status === 'ACTIVATED' ? 'Activated' : (user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status)),
 
         groupId: user.groupId,
 
@@ -390,7 +390,7 @@ exports.updateBusinessOwner = async (req, res, next) => {
 
         rawStatus: user.status,
 
-        status: user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status),
+        status: user.status === 'ACTIVATED' ? 'Activated' : (user.status === 'APPROVED' ? 'Approved' : (user.status === 'PENDING' ? 'Pending' : user.status)),
 
         groupId: user.groupId,
 
@@ -586,7 +586,8 @@ exports.listApprovedBusinessOwners = async (req, res, next) => {
 
     const { q, limit, offset, groupId } = req.query;
 
-    let opts = buildListOptions({ status: 'APPROVED', q, limit, offset, groupId });
+    let opts = buildListOptions({ q, limit, offset, groupId });
+    opts.where.status = { [Op.in]: ['APPROVED', 'ACTIVATED'] };
 
     opts = await scopeBusinessOwners(req, opts);
 

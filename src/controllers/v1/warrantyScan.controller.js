@@ -2,6 +2,7 @@
 // ✅ Access socket.io instance
 const { fn, col, where: sqlWhere } = require('sequelize');
 const ScanService = require('../../services/v1/warrantyScan.service');
+const { logNfcScanFailure, reportClientScanFailure } = require('../../services/v1/nfcScanFailure.service');
 const { User } = require('../../models'); // ✅ ADD THIS LINE
 
 const { getWarrantyFromWP , NotFoundError, ExternalServiceError} = require('../../utils/getWarrantyFromWP');
@@ -696,6 +697,20 @@ exports.getUserTotalPoints = async (req, res) => {
   }
 };
 
+exports.getNearbyCustomers = async (req, res) => {
+  try {
+    const customers = await ScanService.listNearbyCustomers({
+      userId: req.user?.id || null,
+      lat: req.query.lat,
+      lng: req.query.lng,
+    });
+    return res.status(200).json({ success: true, data: customers });
+  } catch (err) {
+    const status = err.http || err.statusCode || 400;
+    return res.status(status).json({ success: false, message: err.message });
+  }
+};
+
 exports.getLocationStatus = async (req, res) => {
   try {
     const { bsg_cust_id: bsgCustId } = req.params;
@@ -745,11 +760,25 @@ exports.activateCustomerLocation = async (req, res) => {
       data: result,
     });
   } catch (err) {
-    return res.status(400).json({ success: false, message: err.message });
+    const status = err.http || err.statusCode || 400;
+    const bodyCustomerId = req.body?.scanned_bsg_cust_id || req.body?.scannedBsgCustId || null;
+    await logNfcScanFailure({
+      userId: req.user?.id || null,
+      customerId: err.customerId || bodyCustomerId,
+      errorCode: err.code,
+      errorMessage: err.message,
+      source: 'activate',
+    });
+    return res.status(status).json({
+      success: false,
+      message: err.message,
+      ...(err.code ? { code: err.code } : {}),
+    });
   }
 };
 
 exports.validateNfcScan = async (req, res) => {
+  const userId = req.user?.id || null;
   try {
     const {
        scanned_nfc_value: scannedNfcValue, 
@@ -758,6 +787,12 @@ exports.validateNfcScan = async (req, res) => {
          rep_lng: repLng 
         } = req.body || {};
     if (!scannedNfcValue) {
+      await logNfcScanFailure({
+        userId,
+        errorCode: 'MISSING_NFC',
+        errorMessage: 'scanned_nfc_value is required',
+        source: 'validate_scan',
+      });
       return res.status(400).json({ success: false, message: 'scanned_nfc_value is required' });
     }
 
@@ -766,12 +801,60 @@ exports.validateNfcScan = async (req, res) => {
       nfcSerialNumber,   // ← NEW
       repLat,
       repLng,
-      userId: req.user?.id || null,
+      userId,
     });
+
+    if (result?.allowed === false && result?.reason === 'OUT_OF_RADIUS') {
+      await logNfcScanFailure({
+        userId,
+        customerId: result.bsgCustId || null,
+        errorCode: 'OUT_OF_RADIUS',
+        errorMessage: 'الرجاء الذهاب الى موقع العميل لإتمام القراءة',
+        source: 'validate_scan',
+      });
+    }
 
     return res.status(200).json({ success: true, data: result });
 } catch (err) {
-  const status = err.http || 400;
-  return res.status(status).json({ success: false, message: err.message });
+  const status = err.http || err.statusCode || 400;
+  await logNfcScanFailure({
+    userId,
+    customerId: err.customerId || null,
+    errorCode: err.code,
+    errorMessage: err.message,
+    source: 'validate_scan',
+  });
+  return res.status(status).json({
+    success: false,
+    message: err.message,
+    ...(err.code ? { code: err.code } : {}),
+  });
 }
+};
+
+exports.reportScanFailure = async (req, res) => {
+  try {
+    const {
+      customer_id: customerId,
+      error_code: errorCode,
+      error_message: errorMessage,
+      source,
+    } = req.body || {};
+
+    await reportClientScanFailure({
+      userId: req.user?.id || null,
+      customerId,
+      errorCode,
+      errorMessage,
+      source,
+    });
+
+    return res.status(201).json({ success: true, message: 'Scan failure saved.' });
+  } catch (err) {
+    const status = err.statusCode || err.http || 500;
+    return res.status(status).json({
+      success: false,
+      message: status === 500 ? 'Failed to save scan failure' : err.message,
+    });
+  }
 };

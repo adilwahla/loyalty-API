@@ -3,7 +3,9 @@ const { Op } = require("sequelize");
 const { Task, User, TaskReassignHistory, Group, sequelize, Sequelize } = require("../../models");
 const AppError = require("../../utils/appError");
 const { getSelectableTaskTypeCodes } = require("./taskType.service");
-const { verifyOrEnrollNfcSerialNumber } = require("../../utils/nfcSerial.util");
+const { verifyNfcSerialNumber } = require("../../utils/nfcSerial.util");
+const { logNfcScanFailure } = require("./nfcScanFailure.service");
+const { isCustomerFieldActivated, mobileFieldStatus } = require("../../utils/customerFieldStatus");
 const {
   ACTIVATION_TASK_TITLES,
   isActivationTaskType,
@@ -19,6 +21,7 @@ const SYSTEM_CREATOR_USER = {
 };
 
 const RANDOM_VISIT_TASK_TITLE = "زيارة عشوائية";
+const RANDOM_VISIT_MAX_DISTANCE_METERS = 50;
 const RANDOM_VISIT_TASK_TYPE = "Random Visit";
 const RANDOM_VISIT_DESCRIPTION =
   "تم إنشاء مهمة عشوائية للعميل من قبل المندوب";
@@ -304,7 +307,8 @@ async function resolveBusinessOwnerByNfc(nfcValue) {
       "longitude",
       "salesRepId",
       "branchManagerId",
-      "nfcSerialNumber", // ← NEW
+      "nfcSerialNumber",
+      "status",
     ],
   });
 }
@@ -329,6 +333,7 @@ function formatRandomVisitCustomer(bo) {
     longitude,
     businessAddress,
     location: businessAddress,
+    status: mobileFieldStatus(bo),
   };
 }
 
@@ -405,37 +410,145 @@ function validateRandomVisitCompletionPayload({
   };
 }
 
-async function prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUserId }) {
+async function recordRandomVisitScanFailure({ userId, salesRepId, customerId, err }) {
+  await logNfcScanFailure({
+    userId,
+    salesRepId,
+    customerId,
+    errorCode: err.code,
+    errorMessage: err.message,
+    source: 'random_visit',
+  });
+}
+
+function parseCoordinate(value) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const earthRadius = 6371000;
+  const toRad = (value) => (value * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return earthRadius * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a)));
+}
+
+async function assertRepWithinCustomerRadius({ customer, repLat, repLng, userId, salesRepId }) {
+  const latitude = parseCoordinate(repLat);
+  const longitude = parseCoordinate(repLng);
+  if (latitude == null || longitude == null) {
+    const err = new AppError("rep_lat and rep_lng are required and must be valid numbers", 400);
+    await recordRandomVisitScanFailure({
+      userId,
+      salesRepId,
+      customerId: customer.bsgCustId,
+      err,
+    });
+    throw err;
+  }
+
+  const customerLat = Number(customer.latitude);
+  const customerLng = Number(customer.longitude);
+  if (!Number.isFinite(customerLat) || !Number.isFinite(customerLng)) {
+    const err = new AppError("Customer does not have a saved location", 400);
+    err.code = "CUSTOMER_LOCATION_MISSING";
+    await recordRandomVisitScanFailure({
+      userId,
+      salesRepId,
+      customerId: customer.bsgCustId,
+      err,
+    });
+    throw err;
+  }
+
+  const distance = distanceMeters(customerLat, customerLng, latitude, longitude);
+  if (distance > RANDOM_VISIT_MAX_DISTANCE_METERS) {
+    const err = new AppError("الرجاء الذهاب الى موقع العميل لإتمام القراءة", 403);
+    err.code = "OUT_OF_RADIUS";
+    await recordRandomVisitScanFailure({
+      userId,
+      salesRepId,
+      customerId: customer.bsgCustId,
+      err,
+    });
+    throw err;
+  }
+}
+
+async function prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUserId, repLat, repLng }) {
   const normalizedNfc = String(nfcValue || "").trim();
   if (!normalizedNfc) {
-    throw new AppError("nfc_value is required", 400);
+    const err = new AppError("nfc_value is required", 400);
+    await recordRandomVisitScanFailure({ userId: creatorUserId, err });
+    throw err;
   }
   if (!creatorUserId) {
-    throw new AppError("Unauthorized: user not found", 401);
+    const err = new AppError("Unauthorized: user not found", 401);
+    await recordRandomVisitScanFailure({ err });
+    throw err;
   }
 
   const repUser = await User.findByPk(creatorUserId, {
     attributes: ["id", "salesRepId", "branchManagerId", "role"],
   });
   if (!repUser) {
-    throw new AppError("Unauthorized: user not found", 401);
+    const err = new AppError("Unauthorized: user not found", 401);
+    await recordRandomVisitScanFailure({ userId: creatorUserId, err });
+    throw err;
   }
 
-  const customer = await sequelize.transaction(async (transaction) => {
-    const found = await resolveBusinessOwnerByNfc(normalizedNfc, {
-      transaction,
-      lock: transaction.LOCK.UPDATE,
+  const salesRepId = repUser.salesRepId || repUser.branchManagerId || null;
+  const customer = await resolveBusinessOwnerByNfc(normalizedNfc);
+  if (!customer?.bsgCustId) {
+    const err = new AppError("Scanned NFC value does not map to a customer", 404);
+    await recordRandomVisitScanFailure({
+      userId: creatorUserId,
+      salesRepId,
+      customerId: normalizedNfc.slice(0, 255),
+      err,
     });
-    if (!found?.bsgCustId) {
-      throw new AppError("Scanned NFC value does not map to a customer", 404);
-    }
+    throw err;
+  }
+  if (!isCustomerFieldActivated(customer)) {
+    const err = new AppError(
+      "Customer must complete activation before a random visit",
+      403
+    );
+    err.code = "CUSTOMER_NOT_ACTIVATED";
+    await recordRandomVisitScanFailure({
+      userId: creatorUserId,
+      salesRepId,
+      customerId: customer.bsgCustId,
+      err,
+    });
+    throw err;
+  }
 
-    await verifyOrEnrollNfcSerialNumber({ customer: found, scannedSerial: nfcSerialNumber, transaction });
+  try {
+    verifyNfcSerialNumber({ customer, scannedSerial: nfcSerialNumber });
+    await assertRepLinkedToCustomer(repUser, customer);
+  } catch (err) {
+    await recordRandomVisitScanFailure({
+      userId: creatorUserId,
+      salesRepId,
+      customerId: customer.bsgCustId,
+      err,
+    });
+    throw err;
+  }
 
-    return found;
+  await assertRepWithinCustomerRadius({
+    customer,
+    repLat,
+    repLng,
+    userId: creatorUserId,
+    salesRepId,
   });
 
-  await assertRepLinkedToCustomer(repUser, customer);
   const assignee = await resolveTaskAssignee({ userId: creatorUserId });
 
   return { customer, assignee };
@@ -584,6 +697,7 @@ async function loadCustomersForTasks(tasks) {
  
         if (!('latitude' in customerData)) customerData.latitude = null;
         if (!('longitude' in customerData)) customerData.longitude = null;
+        customerData.status = mobileFieldStatus(customer);
 
         taskData.customer = customerData;
  
@@ -964,8 +1078,14 @@ class TaskService {
     return true;
   }
  
-async resolveRandomVisitCustomerFromNfc({ nfcValue, nfcSerialNumber, creatorUserId }) {
-  const { customer } = await prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUserId });
+async resolveRandomVisitCustomerFromNfc({ nfcValue, nfcSerialNumber, creatorUserId, repLat, repLng }) {
+  const { customer } = await prepareRandomVisitContext({
+    nfcValue,
+    nfcSerialNumber,
+    creatorUserId,
+    repLat,
+    repLng,
+  });
   const lastStock = await findLastStockCountForCustomer(customer.bsgCustId);
   return {
     customer: formatRandomVisitCustomer(customer),
@@ -978,6 +1098,8 @@ async completeRandomVisitFromNfc({
   nfcValue,
   nfcSerialNumber,
   creatorUserId,
+  repLat,
+  repLng,
   comment,
   stockCount,
   dateVisit,
@@ -988,6 +1110,8 @@ async completeRandomVisitFromNfc({
     nfcValue,
     nfcSerialNumber,
     creatorUserId,
+    repLat,
+    repLng,
   });
 
     const completion = validateRandomVisitCompletionPayload({

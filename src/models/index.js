@@ -18,6 +18,7 @@ const TaskReassignHistory = require("./taskReassignHistory.model");
 const TaskType = require("./taskType.model");
 const DeviceTokenModel = require("./deviceToken.model");
 const AuthSessionModel = require("./authSession.model");
+const NfcScanFailureModel = require("./nfcScanFailure.model");
 // this is new update for group.
 const GroupModel = require("./group.model");
  
@@ -52,6 +53,7 @@ const BranchManager = BranchManagerModel(sequelize, DataTypes);
 const Group = GroupModel(sequelize, DataTypes);
 const DeviceToken = DeviceTokenModel(sequelize, DataTypes);
 const AuthSession = AuthSessionModel(sequelize, DataTypes);
+const NfcScanFailure = NfcScanFailureModel(sequelize, DataTypes);
  
 // RBAC models
 const Role = RoleModel(sequelize, DataTypes);
@@ -143,6 +145,7 @@ module.exports = {
   Group,
   DeviceToken,
   AuthSession,
+  NfcScanFailure,
   // RBAC
   Role,
   Duty,
