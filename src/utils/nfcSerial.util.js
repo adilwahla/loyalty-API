@@ -46,4 +46,37 @@ async function enrollNfcSerialNumber({ customer, scannedSerial, transaction }) {
   if (stored !== serial) throw serialMismatchError();
 }
 
-module.exports = { verifyNfcSerialNumber, enrollNfcSerialNumber };
+function hasSavedLocation(customer) {
+  const lat = customer?.latitude;
+  const lng = customer?.longitude;
+  return lat != null && lat !== '' && lng != null && lng !== '';
+}
+
+/**
+ * Repair path for a random visit only.
+ * Caller must already confirm the activation task is Completed.
+ * This still requires a saved location, an empty serial, and a serial sent by the app.
+ * Then it stores that serial and sets status to ACTIVATED.
+ * The normal activation task still owns first-time enrollment through enrollNfcSerialNumber.
+ */
+async function backfillMissingSerialOnRandomVisit({ customer, scannedSerial, transaction }) {
+  if (!hasSavedLocation(customer)) return false;
+
+  const serial = normalizeSerial(scannedSerial);
+  if (!serial) return false;
+  if (normalizeSerial(customer?.nfcSerialNumber)) return false;
+
+  const updates = { nfcSerialNumber: serial };
+  if (String(customer.status || '').toUpperCase() !== 'ACTIVATED') {
+    updates.status = 'ACTIVATED';
+  }
+
+  await customer.update(updates, { transaction });
+  return true;
+}
+
+module.exports = {
+  verifyNfcSerialNumber,
+  enrollNfcSerialNumber,
+  backfillMissingSerialOnRandomVisit,
+};

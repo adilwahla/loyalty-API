@@ -3,11 +3,12 @@ const { Op } = require("sequelize");
 const { Task, User, TaskReassignHistory, Group, sequelize, Sequelize } = require("../../models");
 const AppError = require("../../utils/appError");
 const { getSelectableTaskTypeCodes } = require("./taskType.service");
-const { verifyNfcSerialNumber } = require("../../utils/nfcSerial.util");
+const { verifyNfcSerialNumber, backfillMissingSerialOnRandomVisit } = require("../../utils/nfcSerial.util");
 const { logNfcScanFailure } = require("./nfcScanFailure.service");
 const { isCustomerFieldActivated, mobileFieldStatus } = require("../../utils/customerFieldStatus");
 const {
   ACTIVATION_TASK_TITLES,
+  ACTIVATION_TASK_TYPES,
   isActivationTaskType,
 } = require("./customerActivationTaskSync.service");
 const TASK_USER_ATTRIBUTES = ["id", "fullName", "email", "phoneNumber", "role", "salesRepId", "branchManagerId"];
@@ -479,6 +480,19 @@ async function assertRepWithinCustomerRadius({ customer, repLat, repLng, userId,
   }
 }
 
+function findCompletedActivationTask(customerId) {
+  if (!customerId) return null;
+  return Task.findOne({
+    where: {
+      customerId,
+      taskStatus: "Completed",
+      taskTitle: { [Op.in]: ACTIVATION_TASK_TITLES },
+      taskType: { [Op.in]: ACTIVATION_TASK_TYPES },
+    },
+    attributes: ["id"],
+  });
+}
+
 async function prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUserId, repLat, repLng }) {
   const normalizedNfc = String(nfcValue || "").trim();
   if (!normalizedNfc) {
@@ -514,11 +528,11 @@ async function prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUse
     throw err;
   }
   if (!isCustomerFieldActivated(customer)) {
-    const err = new AppError(
-      "Customer must complete activation before a random visit",
-      403
-    );
-    err.code = "CUSTOMER_NOT_ACTIVATED";
+    const completedActivationTask = await findCompletedActivationTask(customer.bsgCustId);
+    const err = completedActivationTask
+      ? new AppError("Customer does not have a saved location", 400)
+      : new AppError("Customer must complete activation before a random visit", 403);
+    err.code = completedActivationTask ? "CUSTOMER_LOCATION_MISSING" : "CUSTOMER_NOT_ACTIVATED";
     await recordRandomVisitScanFailure({
       userId: creatorUserId,
       salesRepId,
@@ -548,6 +562,15 @@ async function prepareRandomVisitContext({ nfcValue, nfcSerialNumber, creatorUse
     userId: creatorUserId,
     salesRepId,
   });
+
+  const completedActivationTask = await findCompletedActivationTask(customer.bsgCustId);
+
+  if (completedActivationTask) {
+    await backfillMissingSerialOnRandomVisit({
+      customer,
+      scannedSerial: nfcSerialNumber,
+    });
+  }
 
   const assignee = await resolveTaskAssignee({ userId: creatorUserId });
 
